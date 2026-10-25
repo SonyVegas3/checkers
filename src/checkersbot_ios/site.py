@@ -30,12 +30,14 @@ from typing import Any, Callable, Dict, Optional
 
 from checkersbot.site import (
     ACCEPT_COIN_OFFER_JS,
+    CANCEL_SEARCH_JS,
     DECLINE_CHAT_JS,
     FIT_VIEW_JS,
     LOBBY_STEP_JS,
     LOBBY_URL,
     READ_STATE_JS,
     REMATCH_JS,
+    SEARCH_STATUS_JS,
     SELECTORS,
     SiteError,
     SiteState,
@@ -240,6 +242,14 @@ class WebViewSite:
     def decline_chat_offer(self) -> str:
         """Close the chat invitation (the site itself only hides the dialog)."""
         return str(self._eval(f"JSON.stringify({DECLINE_CHAT_JS})") or "none")
+
+    def search_status(self) -> str:
+        """What the site's "searching for an opponent" dialog is doing."""
+        return str(self._eval(f"JSON.stringify({SEARCH_STATUS_JS})") or "none")
+
+    def cancel_search(self) -> str:
+        """Press the search dialog's Cancel button."""
+        return str(self._eval(f"JSON.stringify({CANCEL_SEARCH_JS})") or "none")
 
     def open_lobby(self) -> bool:
         """Navigate the WebView back to the lobby (leaves the finished table)."""

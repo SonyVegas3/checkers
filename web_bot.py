@@ -78,11 +78,13 @@ from checkersbot.board import RED, square_name
 from checkersbot.bot import CheckersBot
 from checkersbot.site import (  # noqa: F401 - re-exported for the tests / CLI
     ACCEPT_COIN_OFFER_JS,
+    CANCEL_SEARCH_JS,
     DECLINE_CHAT_JS,
     FIT_VIEW_JS,
     LOBBY_URL,
     READ_STATE_JS,
     REMATCH_JS,
+    SEARCH_STATUS_JS,
     SELECTORS,
     SiteState,
     first_landing,
@@ -449,6 +451,21 @@ class JokerGameSite:
             return str(self.page.evaluate(DECLINE_CHAT_JS) or "none")
         except PlaywrightError as error:
             self.log(f"  (chat offer: {error})")
+            return "none"
+
+    def search_status(self) -> str:
+        """What the site's "searching for an opponent" dialog is doing."""
+        try:
+            return str(self.page.evaluate(SEARCH_STATUS_JS) or "none")
+        except PlaywrightError:
+            return "none"
+
+    def cancel_search(self) -> str:
+        """Press the search dialog's Cancel button."""
+        try:
+            return str(self.page.evaluate(CANCEL_SEARCH_JS) or "none")
+        except PlaywrightError as error:
+            self.log(f"  (cancel search: {error})")
             return "none"
 
     def _wait_hidden(self, selector: str, timeout_ms: int = 6000) -> bool:
@@ -909,6 +926,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chat-wait", type=float, default=5.0,
                         help="seconds a chat invitation is left alone before the bot "
                              "declines it and plays on (default: 5)")
+    parser.add_argument("--think-delays", default="2,3,5,7",
+                        help="comma separated 'thinking' times: the first move of a "
+                             "game is quick, every later move waits one of these at "
+                             "random (default: 2,3,5,7; 0 = no delay)")
     parser.add_argument("--max-errors", type=int, default=5, help="stop after N consecutive failures")
     parser.add_argument("--once", action="store_true", help="play a single move, then exit")
     parser.add_argument("--dry-run", action="store_true",
@@ -952,6 +973,11 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
     should_stop = getattr(args, "should_stop", None)
     lobby_walk = getattr(args, "lobby_walk", True)
     channel = getattr(args, "channel", None)
+    think_delays = tuple(
+        float(part)
+        for part in str(getattr(args, "think_delays", "") or "").replace(" ", "").split(",")
+        if part
+    )
 
     # Inside a frozen (PyInstaller) build Playwright looks for its browsers next to
     # its own driver, so point it at the copy installed on this machine; if there is
@@ -1052,6 +1078,7 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
                 trace_board=args.trace_board,
                 rematch_wait=args.rematch_wait,
                 chat_wait=args.chat_wait,
+                think_delays=think_delays,
                 log=log,
                 should_stop=should_stop,
                 lobby_walk=lobby_walk,

@@ -10,6 +10,7 @@ clicking it and verifying every step - is shared by both.
 
 from __future__ import annotations
 
+import random
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -65,6 +66,7 @@ class CheckersBot:
         rules: str = "joker",
         rematch_wait: float = 30.0,
         chat_wait: float = 5.0,
+        think_delays: Sequence[float] = (2.0, 3.0, 5.0, 7.0),
         log=None,
         should_stop=None,
         lobby_walk: bool = True,
@@ -107,6 +109,13 @@ class CheckersBot:
         self.rematch_wait = max(1.0, float(rematch_wait))
         # how long a chat invitation is left alone before the bot declines it
         self.chat_wait = max(1.0, float(chat_wait))
+        # human-like pacing: the first move of a game is quick, the rest waits one
+        # of these times ("thinking"), so the bot does not play like a machine
+        self.think_delays = tuple(float(delay) for delay in (think_delays or ()))
+        self._thought_step: Optional[object] = None
+        self.moves_in_game = 0
+        # a search that has run this long without a table is cancelled and retried
+        self.search_timeout = 90.0
         self._chat_offer_since: Optional[float] = None
         self._coin_offer_answered = 0
         # the GUI pipes every line into a text widget and can ask the loop to stop
@@ -445,6 +454,7 @@ class CheckersBot:
 
         self.failures = 0
         self.moves_played += 1
+        self.moves_in_game += 1
         return move
 
     def _recover_with_site_moves(self, state: SiteState) -> Optional[Move]:
@@ -483,6 +493,7 @@ class CheckersBot:
                 if self._execute_move(move, state):
                     self.failures = 0
                     self.moves_played += 1
+                    self.moves_in_game += 1
                     return move
             self.failures += 1
             if self.failures > 1:
@@ -520,6 +531,7 @@ class CheckersBot:
             self._wait_for_turn_to_pass()
             self.failures = 0
             self.moves_played += 1
+            self.moves_in_game += 1
             return Move(origin, landing)
 
         self.log("! the site offers no clickable move - skipping this turn")
@@ -720,15 +732,13 @@ class CheckersBot:
             self.log("! no board is open - open a table in the browser first "
                      "(or let the bot walk the lobby)")
             return False
-        for _ in range(6):
+        for _ in range(3):
             if not self._sign_in_if_needed():
                 return False
-            if not self.site.enter_game(self.coins):
-                break
-            self.log("waiting for the table to open...")
-            if self.site.wait_for_board(timeout_ms=25000):
-                self._after_board()
+            if self._enter_lobby_game(timeout=45.0):
                 return True
+            self.site.open_lobby()
+            time.sleep(1.5)
         if self.site.wait_for_board(timeout_ms=int(self.turn_timeout * 1000)):
             self._after_board()
             return True
@@ -794,11 +804,80 @@ class CheckersBot:
             self._chat_offer_since = None
         return waiting
 
+    def _think(self) -> None:
+        """Wait like a human before playing.
+
+        The first move of a game is played almost at once (a human already knows
+        the opening), every later move waits one of ``think_delays`` seconds at
+        random, so the pace looks natural instead of "instant machine".
+        """
+        if not self.think_delays:
+            return
+        if self.moves_in_game == 0:
+            delay = random.uniform(0.4, 1.2)
+        else:
+            delay = random.choice(self.think_delays)
+        if delay <= 0:
+            return
+        self.log(f"thinking {delay:.1f}s ...")
+        deadline = time.time() + delay
+        while time.time() < deadline:
+            if self._stop_requested():
+                return
+            time.sleep(min(0.25, max(0.0, deadline - time.time())))
+
+    def _enter_lobby_game(self, timeout: float = 45.0) -> bool:
+        """Walk the lobby dialogs quickly until a table opens.
+
+        Every lobby question is its own dialog (Play a game → Random people →
+        stake), so waiting for the board after each click wasted up to 30 s per
+        step.  This clicks through them as fast as they appear, waits patiently
+        while the site searches for an opponent, and presses the dialog's own
+        Cancel when the search failed ("something went wrong"), so the bot can
+        simply start a new search.
+        """
+        deadline = time.time() + max(10.0, timeout)
+        last_click = 0.0
+        searching_since: Optional[float] = None
+        self.log("lobby: looking for a table")
+        while time.time() < deadline:
+            if self._stop_requested():
+                return False
+            state = self.site.read_state()
+            if state is not None and not state.finished:
+                self._after_board()
+                return True
+            now = time.time()
+            status = str(self.site.search_status())
+            if status == "searching":
+                if searching_since is None:
+                    searching_since = now
+                elif now - searching_since > self.search_timeout:
+                    self.log("the opponent search hangs - cancelling it")
+                    self.site.cancel_search()
+                    searching_since = None
+                time.sleep(0.5)
+                continue
+            if status == "error":
+                self.log("the site could not find an opponent (error) - cancelling")
+                self.site.cancel_search()
+                searching_since = None
+                time.sleep(1.0)
+                continue
+            searching_since = None
+            if now - last_click >= 0.7:
+                self.site.enter_game(self.coins)
+                last_click = now
+            time.sleep(0.3)
+        return False
+
     def _reset_for_new_game(self) -> None:
         """Forget the previous table - a rematch can swap the colours."""
         self.history.clear()
         self.probe_map = {}
         self.failures = 0
+        self.moves_in_game = 0
+        self._thought_step = None
         self._chat_offer_since = None
         self._coin_offer_answered = 0
         self.my_site_color = (
@@ -866,17 +945,15 @@ class CheckersBot:
             return False
 
         self.log("leaving the table and looking for a new opponent")
-        self.site.open_lobby()
-        time.sleep(2.0)
-        for _ in range(8):
+        for attempt in range(3):
             if self._stop_requested():
                 return False
-            if self.site.enter_game(self.coins):
-                if self.site.wait_for_board(timeout_ms=30000):
-                    self._after_board()
-                    self.log("new table found - playing")
-                    return True
-            time.sleep(2.0)
+            self.site.open_lobby()
+            time.sleep(1.5)
+            if self._enter_lobby_game(timeout=45.0):
+                self.log("new table found - playing")
+                return True
+            self.log(f"no table yet - trying again ({attempt + 1}/3)")
         self.log("! no new table was found")
         return False
 
@@ -919,6 +996,9 @@ class CheckersBot:
                     continue
 
                 self._last_wait_log = 0.0
+                if state.step != self._thought_step:
+                    self._thought_step = state.step
+                    self._think()
                 move = self.play_one_move()
                 if move is None:
                     if self.failures > self.max_errors:

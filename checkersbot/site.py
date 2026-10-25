@@ -116,6 +116,45 @@ ANSWER_DIALOG_JS = r"""
 })()
 """
 
+#: What the "searching for an opponent" dialog is doing right now.
+SEARCH_STATUS_JS = r"""
+(function () {
+  var dialog = document.querySelector('.search-dialog');
+  if (!dialog) return 'none';
+  var error = '';
+  if (typeof lang === 'object' && lang && typeof lang.text === 'function') {
+    try { error = String(lang.text(56)); } catch (exception) { error = ''; }
+  }
+  var text = dialog.textContent || '';
+  if (error && text.indexOf(error) >= 0) return 'error';
+  return 'searching';
+})()
+"""
+
+#: Press the search dialog's own "Cancel" button (item-id="cancel", lang id 127).
+CANCEL_SEARCH_JS = r"""
+(function () {
+  var buttons = document.querySelectorAll('.search-dialog button[item-id="cancel"]');
+  if (buttons.length) {
+    buttons[0].click();
+    return 'clicked';
+  }
+  var label = '';
+  if (typeof lang === 'object' && lang && typeof lang.text === 'function') {
+    try { label = String(lang.text(127)).trim(); } catch (exception) { label = ''; }
+  }
+  var candidates = document.querySelectorAll(
+      '.search-dialog .app-button, .big-dialog .big-dialog-button');
+  for (var index = 0; index < candidates.length; index += 1) {
+    if (label && (candidates[index].textContent || '').trim() === label) {
+      candidates[index].click();
+      return 'clicked';
+    }
+  }
+  return 'none';
+})()
+"""
+
 #: "the opponent offers a bigger stake" dialog: accept it (id 281 -> title,
 #: 282 -> the accept button of the site's own confirm dialog).
 ACCEPT_COIN_OFFER_JS = ANSWER_DIALOG_JS % {
@@ -562,3 +601,9 @@ class Site(Protocol):
 
     def decline_chat_offer(self) -> str:
         """Turn down an invitation to chat so the game is not blocked."""
+
+    def search_status(self) -> str:
+        """``"searching"`` / ``"error"`` / ``"none"`` - what the lobby search does."""
+
+    def cancel_search(self) -> str:
+        """Press the search dialog's Cancel button (a stuck search must be reset)."""

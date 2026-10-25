@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -57,13 +58,18 @@ def _raw(finished: bool, step: int, my_turn: bool = True,
 class FakeSite:
     """Just enough of the Site interface for the game-loop tests."""
 
-    def __init__(self, states, rematch="requested:42") -> None:
+    def __init__(self, states, rematch="requested:42", search="none",
+                 ready_after=0) -> None:
         self.states = list(states)
         self.rematch = rematch
+        self.search = search
+        self.ready_after = ready_after
+        self.reads = 0
         self.lobby_opened = False
         self.games_entered = 0
         self.coin_accepts = 0
         self.chat_declines = 0
+        self.searches_cancelled = 0
 
     def accept_coin_offer(self) -> str:
         self.coin_accepts += 1
@@ -74,9 +80,20 @@ class FakeSite:
         return "clicked"
 
     def read_state(self):
+        self.reads += 1
+        if self.reads <= self.ready_after:
+            return None
         if len(self.states) > 1:
             return self.states.pop(0)
         return self.states[0]
+
+    def search_status(self) -> str:
+        return self.search
+
+    def cancel_search(self) -> str:
+        self.searches_cancelled += 1
+        self.search = "none"
+        return "clicked"
 
     def request_rematch(self) -> str:
         return self.rematch
@@ -159,12 +176,12 @@ class AutoLoopTests(unittest.TestCase):
 
     def test_without_a_rematch_a_new_opponent_is_sought(self):
         finished = SiteState(_raw(True, 40))
-        site = FakeSite([finished], rematch="none")
+        fresh = SiteState(_raw(False, 1))
+        site = FakeSite([finished, fresh], rematch="none")
         bot = self._bot(site)
 
         self.assertTrue(bot._next_game(finished))
         self.assertTrue(site.lobby_opened)
-        self.assertGreaterEqual(site.games_entered, 1)
 
     def test_no_lobby_walk_stops_after_the_game(self):
         finished = SiteState(_raw(True, 40))
@@ -194,8 +211,6 @@ class AutoLoopTests(unittest.TestCase):
         self.assertEqual(site.coin_accepts, 1)
 
     def test_a_chat_invitation_is_declined_after_the_delay(self):
-        import time
-
         chat = SiteState(_raw(False, 10, opponent_chat="yes"))
         site = FakeSite([chat])
         bot = self._bot(site)
@@ -208,6 +223,23 @@ class AutoLoopTests(unittest.TestCase):
         self.assertTrue(bot._answer_offers(chat))
         self.assertEqual(site.chat_declines, 1)
         self.assertIsNone(bot._chat_offer_since)
+
+
+    def test_the_lobby_walk_opens_a_table_quickly(self):
+        ready = SiteState(_raw(False, 1))
+        site = FakeSite([ready], ready_after=4)
+        bot = self._bot(site)
+        started = time.time()
+        self.assertTrue(bot._enter_lobby_game(timeout=15))
+        self.assertLess(time.time() - started, 5.0)
+        self.assertGreaterEqual(site.games_entered, 1)
+
+    def test_a_failed_opponent_search_is_cancelled(self):
+        ready = SiteState(_raw(False, 1))
+        site = FakeSite([ready], search="error", ready_after=4)
+        bot = self._bot(site)
+        self.assertTrue(bot._enter_lobby_game(timeout=15))
+        self.assertGreaterEqual(site.searches_cancelled, 1)
 
 
 if __name__ == "__main__":

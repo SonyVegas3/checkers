@@ -40,6 +40,7 @@ DEFAULT_URL = "https://jokergame.cc/checkers"
 LOG_LINES = 40
 DEPTH = 9            # engine search depth (the panel's default)
 SECONDS = 5.0        # seconds per move
+THINK_DELAYS = (2.0, 3.0, 5.0, 7.0)   # human-like pauses (the first move is quick)
 STAKE = 0            # lobby stake: 0 = 50 coins (the cheapest table)
 
 
@@ -209,6 +210,7 @@ class CheckersBotApp(toga.App):
             poll=1.0,
             # fail fast when no table is open (the panel's 120 s is pointless here)
             turn_timeout=25.0,
+            think_delays=THINK_DELAYS,
             # the phone layout already fits; scaling it would only shrink the board
             apply_fit=False,
             # the app plays until it is stopped: rematch, then a new opponent

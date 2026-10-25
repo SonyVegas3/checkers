@@ -111,7 +111,7 @@ What the panel offers:
 | **1. საიდან დაიწყოს თამაში** | `ავტორიზაცია → ლობი` (signs in with the e-mail/password, then walks the lobby), `ლობი` (the browser profile is already signed in) or `უკვე ღია დაფა` (no lobby at all — the bot only plays the table that is already open, `--no-lobby`) |
 | **2. ავტორიზაცია** | e-mail/phone + password; the password stays in memory and is **never** written to disk |
 | **3. მაგიდა და თანხა** | stake ladder exactly as the site renders it (`0` = 50, `1` = 5 000, `2` = 50 000, `3` = 200 000, `4` = 1 000 000, `5` = 10 000 000 coins), browser profile folder, browser (Playwright Chromium / installed Chrome / Edge) and log folder |
-| **4. ძრავა** | depth, seconds per move, poll interval, max moves — the board rules are fixed to the site's `joker` rule set — plus headless / close-browser / board-trace / dry-run / probe toggles |
+| **4. ძრავა** | depth, seconds per move, poll interval, max moves, **max games**, **rematch wait**, **thinking times** (2,3,5,7 — the board rules are fixed to the site's `joker` set), plus headless / close-browser / board-trace / dry-run / probe toggles |
 | **buttons** | `▶ დაწყება`, `■ შეჩერება` (cooperative, stops after the current move), `✔ წესების შემოწმება` (`--diagnose`), open log/profile folders, save settings |
 | **5. ლოგი** | live output of the bot (same lines as the CLI), mirrored to a file with `--log-file` |
 
@@ -380,6 +380,7 @@ python web_bot.py --headless --max-moves 20 --poll 0.5
 | `--max-games` | `0` (∞) | stop after N games — the default plays on: rematch, then a new opponent |
 | `--rematch-wait` | `30` | seconds to wait for a rematch after a game (the site's own window) |
 | `--chat-wait` | `5` | seconds a chat invitation is left alone before the bot declines it |
+| `--think-delays` | `2,3,5,7` | human-like pauses before a move: the first move of a game is quick, later moves wait one of these at random (`0` = no waiting) |
 | `--max-errors` | `5` | stop after N consecutive failures (screenshots are saved to `logs/`) |
 | `--no-probe` | off | trust the engine without asking the site (debug only) |
 | `--trace-board` | off | log the parsed board before every move |
@@ -410,6 +411,19 @@ it:
 the same two fields (`მაქს. თამაში`, `რემატჩის ლოდინი`). `■ შეჩერება` / Ctrl+C
 stops between moves. The iOS app does exactly the same with `lobby_walk=True`
 and `STAKE = 0`.
+
+**Human pace.** The engine answers in milliseconds, which looks robotic, so the
+bot waits like a player would: the **first move of a game is played quickly**
+(0.4–1.2 s) and every later move waits one of `--think-delays` seconds at random
+(default `2,3,5,7`) before the search starts. The log shows `thinking 5.0s ...`.
+Set `--think-delays 0` (or clear the panel field) to switch it off.
+
+**Fast lobby.** Returning to the lobby used to wait up to 30 s *after every
+click* (`Play a game` → `Random people` → stake are three separate dialogs, and
+the board cannot appear before the last one). The bot now clicks through them as
+fast as they render, keeps polling for the table, and — if the site's
+"Searching in progress" dialog reports an error — presses its own **Cancel**
+button and starts the search again instead of stalling.
 
 ### Mid-game dialogs (bigger stake, chat)
 
