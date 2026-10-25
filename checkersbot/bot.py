@@ -776,6 +776,7 @@ class CheckersBot:
             f"{int(self.rematch_wait)}s for a rematch"
         )
         request_sent = False
+        none_answers = 0
         fresh_reads = 0
         deadline = time.time() + self.rematch_wait
         while time.time() < deadline:
@@ -795,12 +796,18 @@ class CheckersBot:
                 fresh_reads = 0
             if not request_sent:
                 answer = str(self.site.request_rematch())
-                request_sent = answer not in ("", "none", "None")
-                if request_sent:
+                if answer not in ("", "none", "None"):
+                    request_sent = True
                     self.log(f"rematch requested ({answer})")
                 else:
-                    self.log("the site offers no rematch - the opponent left")
-                    break
+                    # the finish data can lag a moment behind the dialog: do not
+                    # walk away from a table that is still willing to rematch
+                    none_answers += 1
+                    if none_answers >= 3:
+                        self.log("the site offers no rematch - the opponent left")
+                        break
+                    time.sleep(2.0)
+                    continue
             time.sleep(0.5)
 
         self._reset_for_new_game()
