@@ -37,8 +37,8 @@ from .site import WebViewSite
 
 DEFAULT_URL = "https://jokergame.cc/checkers"
 LOG_LINES = 40
-DEPTH = 7            # engine search depth
-SECONDS = 3.0        # seconds per move
+DEPTH = 9            # engine search depth (the panel's default)
+SECONDS = 5.0        # seconds per move
 
 
 class CheckersBotApp(toga.App):

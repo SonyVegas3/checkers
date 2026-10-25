@@ -699,7 +699,6 @@ def _diagnose_rules(site: "JokerGameSite", args) -> int:
         log_dir=args.log_dir,
         coins=args.coins,
         trace_board=args.trace_board,
-        rules=args.rules,
     )
     if not bot._open_board():
         print("! no board")
@@ -882,13 +881,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="log the board the bot parsed before every move")
     parser.add_argument("--diagnose", action="store_true",
                         help="compare the site's legal moves with our rules and exit")
-    parser.add_argument("--rules", default="joker",
-                        choices=("joker", "brazilian", "russian", "english"),
-                        help="board rules: joker (brazilian + a man crowned in the "
-                             "middle of a capture keeps capturing as a king - what "
-                             "jokergame.cc plays), brazilian (flying kings + men "
-                             "capture backwards + longest capture), russian (flying "
-                             "kings) or english (default: joker)")
     parser.add_argument("--no-lobby", dest="lobby_walk", action="store_false",
                         help="never walk the lobby: only play on a board that is already "
                              "open in the browser (useful to continue a game)")
@@ -1012,7 +1004,6 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
                 email=args.email or os.environ.get("JOKER_EMAIL"),
                 password=args.password or os.environ.get("JOKER_PASSWORD"),
                 trace_board=args.trace_board,
-                rules=args.rules,
                 log=log,
                 should_stop=should_stop,
                 lobby_walk=lobby_walk,

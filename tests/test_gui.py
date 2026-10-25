@@ -21,14 +21,15 @@ class SettingsTests(unittest.TestCase):
     def test_defaults_match_the_cli_defaults(self):
         settings = Settings()
         argv = settings.to_argv()
-        self.assertIn("--rules", argv)
-        self.assertEqual(argv[argv.index("--rules") + 1], "joker")
+        # the board rules are fixed (jokergame.cc), so there is no --rules flag
+        self.assertNotIn("--rules", argv)
         self.assertEqual(argv[argv.index("--coins") + 1], "0")
         # the parser must accept whatever the panel builds
         args = parse_settings_argv(settings)
-        self.assertEqual(args.rules, "joker")
         self.assertEqual(args.coins, 0)
         self.assertTrue(args.lobby_walk)
+        self.assertEqual(Settings().depth, 9)
+        self.assertEqual(Settings().time, 5.0)
 
     def test_stake_is_forwarded(self):
         for stake in (0, 1, 2, 3, 4, 5):
@@ -57,14 +58,13 @@ class SettingsTests(unittest.TestCase):
 
     def test_engine_and_browser_options(self):
         settings = Settings(depth=12, time=2.5, poll=0.4, max_moves=17,
-                            rules="russian", headless=True, close_browser=True,
+                            headless=True, close_browser=True,
                             trace_board=True, channel="chrome", window_size="1280x800")
         args = parse_settings_argv(settings)
         self.assertEqual(args.depth, 12)
         self.assertAlmostEqual(args.time, 2.5)
         self.assertAlmostEqual(args.poll, 0.4)
         self.assertEqual(args.max_moves, 17)
-        self.assertEqual(args.rules, "russian")
         self.assertTrue(args.headless)
         self.assertTrue(args.close_browser)
         self.assertTrue(args.trace_board)
@@ -91,7 +91,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(loaded.password, "")
 
     def test_settings_round_trip(self):
-        original = Settings(mode="board", stake=4, depth=11, time=1.5, rules="english",
+        original = Settings(mode="board", stake=4, depth=11, time=1.5,
                             headless=True, close_browser=True, trace_board=True,
                             dry_run=True, no_probe=True, no_fit=True,
                             max_moves=9, channel="msedge")

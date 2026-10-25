@@ -6,7 +6,7 @@ This is also the entry point of the packaged ``CheckersBot.exe``:
   **lobby only** (the browser profile is already signed in) or **already open
   table** (no lobby at all, just play the board that is on screen);
 * choose the stake the lobby picks (``0`` = 50 coins ... ``5`` = 10 000 000);
-* engine settings (depth, seconds per move, rules), browser profile and channel;
+* engine settings (depth, seconds per move), browser profile and channel;
 * start / stop, "check the rules" (``--diagnose``), open the log and profile
   folders, and a live log of everything the bot prints.
 
@@ -59,13 +59,6 @@ MODES: Dict[str, str] = {
     "board": "უკვე ღია დაფა (ლობის გარეშე)",
 }
 
-RULES: Dict[str, str] = {
-    "joker": "joker — როგორც jokergame.cc (დამკად ქცევა ჭამის შუაში + გაგრძელება)",
-    "brazilian": "brazilian — დამკა (მფრინავი მეფე + უკანა კაპტურა)",
-    "russian": "russian — მფრინავი მეფე, ჯარისკაცი მხოლოდ წინ",
-    "english": "english — ამერიკული (მეფე ერთ უჯრაზე)",
-}
-
 CHANNELS: Dict[str, str] = {
     "": "Playwright-ის Chromium",
     "chrome": "Google Chrome (ინსტალირებული)",
@@ -102,7 +95,6 @@ class Settings:
     poll: float = 1.0
     turn_timeout: float = 120.0
     max_moves: int = 0
-    rules: str = "joker"
     channel: str = ""
     window_size: str = ""
     headless: bool = False
@@ -163,7 +155,6 @@ class Settings:
             "--time", str(float(self.time)),
             "--poll", str(float(self.poll)),
             "--turn-timeout", str(float(self.turn_timeout)),
-            "--rules", self.rules,
         ]
         if self.mode == "board":
             argv.append("--no-lobby")
@@ -346,17 +337,11 @@ class BotWindow:
         ttk.Spinbox(engine, from_=0, to=999, width=5, textvariable=self.maxmoves_var).grid(
             row=0, column=7, sticky="w", padx=(6, 0))
 
-        ttk.Label(engine, text="წესები:").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self.rules_var = tk.StringVar()
-        self.rules_box = ttk.Combobox(
-            engine, textvariable=self.rules_var, width=56, state="readonly",
-            values=[RULES[key] for key in RULES],
-        )
-        self.rules_box.grid(row=1, column=1, columnspan=7, sticky="w", padx=(6, 0),
-                            pady=(6, 0))
-
+        # The board rules are fixed: the bot always plays the jokergame.cc rule
+        # set (Brazilian rules + a man crowned mid-capture keeps capturing), so
+        # there is nothing to choose here.
         checks = ttk.Frame(engine)
-        checks.grid(row=2, column=0, columnspan=8, sticky="w", pady=(8, 0))
+        checks.grid(row=1, column=0, columnspan=8, sticky="w", pady=(8, 0))
         self.headless_var = tk.BooleanVar()
         self.closebrowser_var = tk.BooleanVar()
         self.trace_var = tk.BooleanVar()
@@ -426,7 +411,6 @@ class BotWindow:
         self.time_var.set(str(s.time))
         self.poll_var.set(str(s.poll))
         self.maxmoves_var.set(str(s.max_moves))
-        self.rules_var.set(RULES.get(s.rules, RULES["joker"]))
         self.headless_var.set(bool(s.headless))
         self.closebrowser_var.set(bool(s.close_browser))
         self.trace_var.set(bool(s.trace_board))
@@ -450,9 +434,6 @@ class BotWindow:
         s.time = max(0.0, self._as_float(self.time_var.get(), 5.0))
         s.poll = max(0.1, self._as_float(self.poll_var.get(), 1.0))
         s.max_moves = max(0, self._as_int(self.maxmoves_var.get(), 0))
-        rules_label = self.rules_var.get()
-        s.rules = next((key for key, text in RULES.items() if text == rules_label),
-                       "joker")
         s.headless = bool(self.headless_var.get())
         s.close_browser = bool(self.closebrowser_var.get())
         s.trace_board = bool(self.trace_var.get())

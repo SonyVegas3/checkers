@@ -75,10 +75,14 @@ shows the live log. No Python installation is needed for that.
 ```powershell
 python game.py                  # you are RED (bottom rows), engine is BLACK
 python game.py --ai-red         # engine plays RED and moves first
-python game.py --depth 9 --time 5                       # joker rules = what the site plays (default)
-python game.py --depth 9 --time 5 --rules english       # American checkers instead
+python game.py --depth 9 --time 5                          # joker rules = what the site plays (default)
+python game.py --depth 9 --time 5 --rules english          # terminal only: American checkers
 python game.py --selfplay 2 --depth 5 --time 1 --verbose   # automated smoke test
 ```
+
+> `--rules` exists **only in `game.py`** (a developer sandbox used by the tests).
+> The web bot, `CheckersBot.exe` and the iOS app always play the site's `joker`
+> rules — there is nothing to pick there.
 
 Inside the game you can type a move (`c3-d4` for a step, `c3xd5` for a jump,
 multi-jumps may be written as `c3xe5xg7`) or one of the commands `moves`,
@@ -107,7 +111,7 @@ What the panel offers:
 | **1. საიდან დაიწყოს თამაში** | `ავტორიზაცია → ლობი` (signs in with the e-mail/password, then walks the lobby), `ლობი` (the browser profile is already signed in) or `უკვე ღია დაფა` (no lobby at all — the bot only plays the table that is already open, `--no-lobby`) |
 | **2. ავტორიზაცია** | e-mail/phone + password; the password stays in memory and is **never** written to disk |
 | **3. მაგიდა და თანხა** | stake ladder exactly as the site renders it (`0` = 50, `1` = 5 000, `2` = 50 000, `3` = 200 000, `4` = 1 000 000, `5` = 10 000 000 coins), browser profile folder, browser (Playwright Chromium / installed Chrome / Edge) and log folder |
-| **4. ძრავა** | depth, seconds per move, poll interval, max moves, rules (`joker`/`brazilian`/`russian`/`english`), plus headless / close-browser / board-trace / dry-run / probe toggles |
+| **4. ძრავა** | depth, seconds per move, poll interval, max moves — the board rules are fixed to the site's `joker` rule set — plus headless / close-browser / board-trace / dry-run / probe toggles |
 | **buttons** | `▶ დაწყება`, `■ შეჩერება` (cooperative, stops after the current move), `✔ წესების შემოწმება` (`--diagnose`), open log/profile folders, save settings |
 | **5. ლოგი** | live output of the bot (same lines as the CLI), mirrored to a file with `--log-file` |
 
@@ -367,7 +371,6 @@ python web_bot.py --headless --max-moves 20 --poll 0.5
 | `--max-moves` | `0` (∞) | stop after N moves |
 | `--max-errors` | `5` | stop after N consecutive failures (screenshots are saved to `logs/`) |
 | `--no-probe` | off | trust the engine without asking the site (debug only) |
-| `--rules` | `joker` | `joker` (Brazilian rules **plus** a man crowned in the middle of a capture keeps capturing as a king — what jokergame.cc plays), `brazilian` (strict international: the move ends on the crown row), `russian` or `english` |
 | `--trace-board` | off | log the parsed board before every move |
 | `--diagnose` | off | compare the site's legal moves with our rules stone by stone and exit |
 | `--no-lobby` | off | never walk the lobby: only play a board that is already open |
@@ -471,10 +474,13 @@ whatever the web client sends.
 
 ## Rules implemented
 
-Four rule sets share one generator, chosen with `Board(..., rules=...)`, the
-`game.py --rules` flag and the `web_bot.py --rules` flag.
+Four rule sets share one generator, chosen with `Board(..., rules=...)`.  **Only
+`joker` is exposed to the bots**: `web_bot.py`, `CheckersBot.exe` and the iOS app
+have no rules option at all — they always play the site's rule set.  The other
+three exist for `game.py` (a developer sandbox) and for the tests that prove
+which rule set the site follows.
 
-### `joker` — what jokergame.cc plays (default)
+### `joker` — what jokergame.cc plays (the only one the bot uses)
 
 Everything from `brazilian` below, **plus Russian promotion**: when a man lands
 on its far row *in the middle of a capture*, it is crowned on the spot and
@@ -485,8 +491,8 @@ finishes the move as a king (`Move.promotes` is set, the search and
 
 This was found in live play: the site offers the continuation, so a bot that
 stops at the crown row plays a move the server does not consider finished and
-then has to resynchronise.  `joker` is the default for the web bot, the GUI, the
-CLI and the iOS app; `brazilian` keeps the strict international behaviour.
+then has to resynchronise.  The web bot, the panel, the CLI defaults and the iOS
+app all use `joker`; `brazilian` keeps the strict international behaviour.
 
 ### `brazilian` — 8x8 international draughts
 
