@@ -69,6 +69,7 @@ class CheckersBot:
         think_delays: Sequence[float] = (2.0, 3.0, 5.0, 7.0),
         log=None,
         should_stop=None,
+        should_lose=None,
         lobby_walk: bool = True,
     ) -> None:
         if site_color not in ("auto",) + SITE_COLORS:
@@ -118,9 +119,13 @@ class CheckersBot:
         self.search_timeout = 90.0
         self._chat_offer_since: Optional[float] = None
         self._coin_offer_answered = 0
+        self._coin_offer_dumped = False
         # the GUI pipes every line into a text widget and can ask the loop to stop
         self._log = log
         self.should_stop = should_stop
+        # "lose on purpose": polled like should_stop, so a panel checkbox or an
+        # app button can turn a game around while the bot is playing
+        self.should_lose = should_lose
         self.lobby_walk = lobby_walk
 
         # calibrated against the site: which engine colour we are, plus whatever
@@ -145,6 +150,33 @@ class CheckersBot:
 
     def _stop_requested(self) -> bool:
         return bool(self.should_stop is not None and self.should_stop())
+
+    def _lose_requested(self) -> bool:
+        """Has the user asked the bot to lose this game on purpose?"""
+        return bool(self.should_lose is not None and self.should_lose())
+
+    def _choose_weak_move(
+        self, board: Board, allowed: Optional[Sequence[Move]] = None
+    ) -> Optional[Move]:
+        """A plausible human slip: a weak move, but not an obvious throw.
+
+        The moves are ranked with a shallow search (worst first); the outright
+        blunders are dropped - never the single worst move, and nothing that
+        loses a whole piece for free - and the bot picks at random from the
+        weaker half that is left.  That loses the game slowly and looks like a
+        normal mistake instead of a suspicious "resignation".
+        """
+        ranked = self.ai.rank_moves(board, allowed=allowed, depth=4)
+        if not ranked:
+            return None
+        if len(ranked) == 1:
+            return ranked[0][1]
+        sane = [item for item in ranked if item[0] > -50_000]
+        pool = sane if len(sane) > 1 else list(ranked)
+        pool = pool[: max(1, int(len(pool) * 0.6))]
+        if len(pool) > 1:
+            pool = pool[1:]              # never the absolute worst move
+        return random.choice(pool)[1]
 
     def _save_debug(self, tag: str) -> None:
         stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -415,7 +447,14 @@ class CheckersBot:
                      f"{'r/R' if self.my_engine_color == RED else 'b/B'}):")
             for line in str(board).splitlines():
                 self.log("   " + line)
-        move = self.ai.choose_move(board, history=self.history)
+        if self._lose_requested():
+            move = self._choose_weak_move(board, legal)
+            if move is None:
+                move = self.ai.choose_move(board, history=self.history)
+            else:
+                self.log("  (losing on purpose - playing a weaker move)")
+        else:
+            move = self.ai.choose_move(board, history=self.history)
         if move is None:
             self.failures += 1
             return None
@@ -484,7 +523,13 @@ class CheckersBot:
                 self.log("! switched our engine side (first calibration)")
 
         if candidates:
-            move = self.ai.choose_move(board, history=self.history, allowed=candidates)
+            if self._lose_requested():
+                move = self._choose_weak_move(board, candidates)
+                if move is not None:
+                    self.log("  (losing on purpose - playing a weaker move)")
+            else:
+                move = self.ai.choose_move(board, history=self.history,
+                                           allowed=candidates)
             if move is not None:
                 self.log(f"our move (site-synced): {move.notation()}   [{self.ai.stats}]")
                 if self.dry_run:
@@ -781,10 +826,15 @@ class CheckersBot:
             answer = str(self.site.accept_coin_offer())
             if answer in ("", "none", "None"):
                 waiting = True
+                if not self._coin_offer_dumped:
+                    self._coin_offer_dumped = True
+                    self.log("! could not click the stake offer - saving the page "
+                             "for diagnosis")
+                    self._save_debug("stake-offer")
             else:
                 self._coin_offer_answered = state.coin_offer
                 self.log(f"the opponent offers to play for "
-                         f"{state.coin_offer} coins - accepted")
+                         f"{state.coin_offer} coins - accepted ({answer})")
         if state.chat_offer:
             now = time.time()
             if self._chat_offer_since is None:
@@ -880,6 +930,7 @@ class CheckersBot:
         self._thought_step = None
         self._chat_offer_since = None
         self._coin_offer_answered = 0
+        self._coin_offer_dumped = False
         self.my_site_color = (
             None if self.requested_site_color == "auto" else self.requested_site_color
         )

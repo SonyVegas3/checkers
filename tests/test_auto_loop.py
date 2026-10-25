@@ -15,7 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from checkersbot.board import RED            # noqa: E402
+from checkersbot.board import RED, Board     # noqa: E402
 from checkersbot.bot import CheckersBot      # noqa: E402
 from checkersbot.site import SiteState       # noqa: E402
 
@@ -240,6 +240,33 @@ class AutoLoopTests(unittest.TestCase):
         bot = self._bot(site)
         self.assertTrue(bot._enter_lobby_game(timeout=15))
         self.assertGreaterEqual(site.searches_cancelled, 1)
+
+
+    def test_rank_moves_orders_every_move(self):
+        board = Board()
+        bot = self._bot(FakeSite([SiteState(_raw(False, 1))]))
+        ranked = bot.ai.rank_moves(board, depth=3)
+        self.assertEqual(len(ranked), len(board.generate_moves()))
+        scores = [score for score, _ in ranked]
+        self.assertEqual(scores, sorted(scores))          # worst first
+
+    def test_the_weak_move_is_legal_and_never_the_best(self):
+        board = Board()
+        site = FakeSite([SiteState(_raw(False, 1))])
+        bot = self._bot(site, should_lose=lambda: True)
+        self.assertTrue(bot._lose_requested())
+
+        legal = board.generate_moves()
+        best = bot.ai.choose_move(board)
+        for _ in range(8):
+            weak = bot._choose_weak_move(board, legal)
+            self.assertIsNotNone(weak)
+            self.assertIn(weak, legal)
+            self.assertNotEqual(weak, best)               # a slip, not a throw
+
+    def test_losing_is_off_by_default(self):
+        bot = self._bot(FakeSite([SiteState(_raw(False, 1))]))
+        self.assertFalse(bot._lose_requested())
 
 
 if __name__ == "__main__":

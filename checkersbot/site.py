@@ -80,41 +80,107 @@ REMATCH_JS = r"""
 })()
 """
 
-#: Answer a mid-game dialog by its own translated text, so it works in any language.
-#:
-#: ``marker_id`` is the language string that identifies the dialog (the site keeps
-#: its translations in ``lang.text(<id>)``), ``button_id`` is the button to press.
-#: Chat invitations are only a client-side prompt, so ``hide`` closes the dialog
-#: when the button is not there; the stake dialog is not cancelable at all.
-ANSWER_DIALOG_JS = r"""
-(function () {
-  if (typeof lang !== 'object' || !lang || typeof lang.text !== 'function') return 'none';
-  var marker = String(lang.text(%(marker_id)d) || '').trim();
-  var button_text = String(lang.text(%(button_id)d) || '').trim();
-  var dialogs = document.querySelectorAll('.big-dialog');
+#: Shared helpers for the dialog scripts: a translated label if the page exposes
+#: ``lang`` (it is a plain global on jokergame.cc, but we never rely on it) and a
+#: visibility test that also works for fixed-positioned dialogs.
+_DIALOG_HELPERS = r"""
+  function label(id, fallback) {
+    try {
+      if (typeof lang === 'object' && lang && typeof lang.text === 'function') {
+        var text = String(lang.text(id) || '').trim();
+        if (text) return text;
+      }
+    } catch (error) { /* ignore */ }
+    return fallback;
+  }
+  function visible(element) {
+    if (!element) return false;
+    var style = window.getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  }
+"""
+
+#: Accept the opponent's bigger-stake offer.  That dialog cannot be cancelled, so
+#: it is found by its translated title (lang id 281) and, if the page language
+#: cannot be read, by simply taking the topmost dialog - the bot only calls this
+#: while ``game_data.opponent.coins > 0``, i.e. while a bet offer is pending.
+ACCEPT_COIN_OFFER_JS = (
+    r"""
+(function () {"""
+    + _DIALOG_HELPERS
+    + r"""
+  var accept = label(282, 'Accept');
+  var marker = label(281, 'Bet offer');
+  var dialogs = document.querySelectorAll('.big-dialog, .v2-game-dialog, .confirm-dialog');
+  var target = null;
   for (var index = 0; index < dialogs.length; index += 1) {
-    var dialog = dialogs[index];
-    var text = (dialog.textContent || '').trim();
-    if (!marker || text.indexOf(marker) < 0) continue;
-    var buttons = dialog.querySelectorAll('.big-dialog-button');
-    for (var b = 0; b < buttons.length; b += 1) {
-      if (button_text && (buttons[b].textContent || '').trim() === button_text) {
-        buttons[b].click();
-        return 'clicked';
+    if (!visible(dialogs[index])) continue;
+    var body = dialogs[index].textContent || '';
+    if (body.indexOf(marker) >= 0 || body.toLowerCase().indexOf('bet') >= 0) {
+      target = dialogs[index];
+      break;
+    }
+  }
+  if (!target) {
+    for (var index = dialogs.length - 1; index >= 0; index -= 1) {
+      if (visible(dialogs[index]) && (dialogs[index].textContent || '').trim()) {
+        target = dialogs[index];
+        break;
       }
     }
-    var light = dialog.querySelector('.big-dialog-button[button-style="light"]');
-    if (light) { light.click(); return 'light'; }
-    if (%(hide)s) {
-      dialog.style.display = 'none';
-      dialog.setAttribute('item-closing', 'yes');
-      return 'hidden';
+  }
+  if (!target) return 'none';
+  var buttons = target.querySelectorAll('.big-dialog-button, .app-button, button');
+  for (var b = 0; b < buttons.length; b += 1) {
+    if ((buttons[b].textContent || '').trim() === accept) {
+      buttons[b].click();
+      return 'clicked';
     }
-    return 'none';
+  }
+  if (buttons.length) {
+    buttons[0].click();
+    return 'fallback';
   }
   return 'none';
 })()
 """
+)
+
+#: Turn down a chat invitation.  Declining is a client-side close on the site, so
+#: if no button can be found the dialog is hidden instead of leaving it on screen.
+DECLINE_CHAT_JS = (
+    r"""
+(function () {"""
+    + _DIALOG_HELPERS
+    + r"""
+  var reject = label(283, 'Reject');
+  var marker = label(284, 'chat');
+  var dialogs = document.querySelectorAll('.big-dialog, .v2-game-dialog, .confirm-dialog');
+  for (var index = 0; index < dialogs.length; index += 1) {
+    var dialog = dialogs[index];
+    if (!visible(dialog)) continue;
+    var html = dialog.innerHTML || '';
+    var body = dialog.textContent || '';
+    var is_chat = html.indexOf('icon-chat') >= 0
+      || (marker && body.indexOf(marker) >= 0)
+      || body.toLowerCase().indexOf('chat') >= 0;
+    if (!is_chat) continue;
+    var buttons = dialog.querySelectorAll('.big-dialog-button, .app-button, button');
+    for (var b = 0; b < buttons.length; b += 1) {
+      if ((buttons[b].textContent || '').trim() === reject) {
+        buttons[b].click();
+        return 'clicked';
+      }
+    }
+    var light = dialog.querySelector('[button-style="light"]');
+    if (light) { light.click(); return 'light'; }
+    dialog.style.display = 'none';
+    return 'hidden';
+  }
+  return 'none';
+})()
+"""
+)
 
 #: What the "searching for an opponent" dialog is doing right now.
 SEARCH_STATUS_JS = r"""
@@ -154,21 +220,6 @@ CANCEL_SEARCH_JS = r"""
   return 'none';
 })()
 """
-
-#: "the opponent offers a bigger stake" dialog: accept it (id 281 -> title,
-#: 282 -> the accept button of the site's own confirm dialog).
-ACCEPT_COIN_OFFER_JS = ANSWER_DIALOG_JS % {
-    "marker_id": 281,
-    "button_id": 282,
-    "hide": "false",
-}
-
-#: "the opponent wants to chat" dialog: decline it (284 -> text, 283 -> button).
-DECLINE_CHAT_JS = ANSWER_DIALOG_JS % {
-    "marker_id": 284,
-    "button_id": 283,
-    "hide": "true",
-}
 
 LOBBY_STEP_JS = r"""
 (function () {

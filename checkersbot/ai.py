@@ -275,6 +275,46 @@ class CheckersAI:
     # ------------------------------------------------------------------
     # search internals
     # ------------------------------------------------------------------
+    def rank_moves(self, board: Board, allowed=None, depth: int = 4):
+        """Score every legal move with a shallow search, **worst first**.
+
+        Used by the bot's "lose on purpose" button: a move taken from the weaker
+        half of this list looks like a human slip rather than an obvious throw.
+        ``allowed`` restricts the candidates exactly like :meth:`choose_move`.
+        """
+        work = board.copy()
+        moves = work.generate_moves()
+        if allowed is not None:
+            restricted = [move for move in moves if move in allowed]
+            if restricted:
+                moves = restricted
+
+        start = time.perf_counter()
+        self._nodes = 0
+        self._table.clear()
+        self._history = None
+        self._deadline = start + self.time_limit if self.time_limit else float("inf")
+        scored: List[Tuple[int, Move]] = []
+        for move in moves:
+            undo = work.make_move(move)
+            try:
+                score = -self._negamax(work, max(0, depth - 1), -INF, INF, 1)
+            except SearchTimeout:
+                work.unmake_move(move, undo)
+                break
+            work.unmake_move(move, undo)
+            scored.append((score, move))
+        scored.sort(key=lambda item: item[0])
+        self.stats = SearchStats(
+            depth,
+            self._nodes,
+            scored[-1][0] if scored else 0,
+            time.perf_counter() - start,
+            scored[-1][1] if scored else None,
+            "ranked",
+        )
+        return scored
+
     def _deepen(self, board: Board, target_depth: int, allowed=None):
         """Iterative deepening up to ``target_depth``; returns the best result so far."""
         snapshot = board.cells[:]

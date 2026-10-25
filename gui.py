@@ -372,12 +372,14 @@ class BotWindow:
         self.trace_var = tk.BooleanVar()
         self.dryrun_var = tk.BooleanVar()
         self.noprobe_var = tk.BooleanVar()
+        self.lose_var = tk.BooleanVar()
         for text, variable in (
             ("უხილავი (headless)", self.headless_var),
             ("ბრაუზერის დახურვა დასრულების შემდეგ", self.closebrowser_var),
             ("დაფის ტრეისი ლოგში", self.trace_var),
             ("მხოლოდ ჩვენება (dry-run)", self.dryrun_var),
             ("probe-ის გამორთვა", self.noprobe_var),
+            ("მარცხი (ადამიანურად)", self.lose_var),
         ):
             ttk.Checkbutton(checks, text=text, variable=variable).pack(
                 side="left", padx=(0, 14))
@@ -611,6 +613,7 @@ class BotWindow:
         try:
             args = parse_settings_argv(settings)
             args.should_stop = self.stop_event.is_set
+            args.should_lose = self.lose_var.get
             code = run_bot(args, log=self.log_line)
         except SystemExit as error:                  # argparse validation
             code = int(error.code or 0)

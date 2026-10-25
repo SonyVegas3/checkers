@@ -930,6 +930,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="comma separated 'thinking' times: the first move of a "
                              "game is quick, every later move waits one of these at "
                              "random (default: 2,3,5,7; 0 = no delay)")
+    parser.add_argument("--lose", action="store_true",
+                        help="play weak moves on purpose (lose the game slowly, "
+                             "like a human mistake)")
     parser.add_argument("--max-errors", type=int, default=5, help="stop after N consecutive failures")
     parser.add_argument("--once", action="store_true", help="play a single move, then exit")
     parser.add_argument("--dry-run", action="store_true",
@@ -971,6 +974,9 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
         return 2
 
     should_stop = getattr(args, "should_stop", None)
+    should_lose = getattr(args, "should_lose", None)
+    if should_lose is None and getattr(args, "lose", False):
+        should_lose = lambda: True       # noqa: E731 - a constant "lose" switch
     lobby_walk = getattr(args, "lobby_walk", True)
     channel = getattr(args, "channel", None)
     think_delays = tuple(
@@ -1081,6 +1087,7 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
                 think_delays=think_delays,
                 log=log,
                 should_stop=should_stop,
+                should_lose=should_lose,
                 lobby_walk=lobby_walk,
             )
             code = bot.run(max_moves=args.max_moves, once=args.once,

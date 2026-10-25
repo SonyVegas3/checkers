@@ -237,7 +237,8 @@ Notes from getting this green in CI:
    (`STAKE = 0` → 50 coins), plays depth 9 with 5 s per move (`DEPTH` /
    `SECONDS` in `src/checkersbot_ios/app.py`) and keeps going: when a game ends
    it asks for a rematch, waits up to 30 s, and then leaves the table and looks
-   for a new opponent — until you press **■ გაჩერება**.
+   for a new opponent — until you press **■ გაჩერება**.  **😞 მარცხი** makes it
+   lose the current game with a believable weak move (see "Losing on purpose").
 3. The log under the board shows the same lines as the desktop bot.
 4. While the bot runs the app keeps the screen awake (`idleTimerDisabled`), so
    the game continues when nobody touches the phone. iOS suspends apps that go
@@ -381,6 +382,7 @@ python web_bot.py --headless --max-moves 20 --poll 0.5
 | `--rematch-wait` | `30` | seconds to wait for a rematch after a game (the site's own window) |
 | `--chat-wait` | `5` | seconds a chat invitation is left alone before the bot declines it |
 | `--think-delays` | `2,3,5,7` | human-like pauses before a move: the first move of a game is quick, later moves wait one of these at random (`0` = no waiting) |
+| `--lose` | off | play weak moves on purpose (lose the game with a believable mistake) |
 | `--max-errors` | `5` | stop after N consecutive failures (screenshots are saved to `logs/`) |
 | `--no-probe` | off | trust the engine without asking the site (debug only) |
 | `--trace-board` | off | log the parsed board before every move |
@@ -442,7 +444,28 @@ Two dialogs can appear in the middle of a game and both used to freeze the bot:
 
 Both are recognised by the site's own translated strings (`lang.text(281)` /
 `lang.text(284)`), so they keep working in Georgian, English or any other
-language; the buttons are clicked by their translated label too.
+language; the buttons are clicked by their translated label too. If the page
+language cannot be read at all, the stake dialog is still answered: it is the
+topmost dialog while `opponent.coins > 0`, and its first button is the accept one
+(the bot only ever asks while a bet offer is pending). When nothing can be
+clicked the bot saves `logs/stake-offer-*.html/.png` once, so the markup can be
+checked.
+
+### Losing on purpose („მარცხი (ადამიანურად)“)
+
+Both UIs have a switch that makes the bot **lose the current game** — the panel
+checkbox in group 4, the **😞 მარცხი** button in the iOS app (CLI: `--lose`):
+
+* every move of that game is played from a **shallow ranking of all legal
+  moves** (`CheckersAI.rank_moves`, worst → best);
+* the outright blunders are dropped — never the single worst move, nothing that
+  gives a piece away for free — and one of the remaining weaker moves is picked
+  at random;
+* the result looks like a normal human slip (a quiet move instead of the best
+  one), not like an obvious resignation, and the bot keeps playing and searching
+  for the next opponent afterwards.
+
+The switch only affects the running game; it is cleared when the bot stops.
 
 ### Keeping the whole board visible
 

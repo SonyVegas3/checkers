@@ -57,6 +57,7 @@ class CheckersBotApp(toga.App):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._bot_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._lose_flag = False
 
     # -- window content -------------------------------------------------
     def build_content(self, app, **kwargs) -> Any:
@@ -74,6 +75,9 @@ class CheckersBotApp(toga.App):
         self.reload_button = toga.Button(
             "↻ განახლება", on_press=self.on_reload, style=Pack(width=120, margin=6)
         )
+        self.lose_button = toga.Button(
+            "😞 მარცხი", on_press=self.on_lose, style=Pack(width=100, margin=6)
+        )
         self.status = toga.Label(
             "CheckersBot 2.0 — იტვირთება...", style=Pack(margin=(6, 6, 0, 6))
         )
@@ -84,7 +88,8 @@ class CheckersBotApp(toga.App):
         )
 
         buttons = toga.Box(
-            style=Pack(direction=ROW), children=[self.start_button, self.reload_button]
+            style=Pack(direction=ROW),
+            children=[self.start_button, self.lose_button, self.reload_button],
         )
         root = toga.Box(
             style=Pack(direction=COLUMN, flex=1, background_color="#101418"),
@@ -198,6 +203,7 @@ class CheckersBotApp(toga.App):
             return
 
         self._stop = threading.Event()
+        self._lose_flag = False
         self.log_view.value = ""
         self.start_button.text = "■ გაჩერება"
         self.status.text = "ვეძებ მაგიდას..."
@@ -220,6 +226,7 @@ class CheckersBotApp(toga.App):
             rules="joker",
             log=self.log_line,
             should_stop=self._stop.is_set,
+            should_lose=lambda: self._lose_flag,
             log_dir=str(self.paths.logs),
         )
         self._bot_thread = threading.Thread(
@@ -245,8 +252,17 @@ class CheckersBotApp(toga.App):
 
     def _bot_finished(self, code: int) -> None:
         self._set_screen_awake(False)
+        self._lose_flag = False
         self.start_button.text = "▶ დაწყება"
         self.status.text = "დასრულდა" if code == 0 else f"შეჩერდა ({code})"
+
+    def on_lose(self, widget, **kwargs) -> None:
+        """Ask the bot to lose this game - with a believable weak move."""
+        if not (self._bot_thread is not None and self._bot_thread.is_alive()):
+            self.log_line("ჯერ დააჭირე „დაწყებას“")
+            return
+        self._lose_flag = True
+        self.log_line("😞 მარცხი ჩართულია - ბოტი სუსტ სვლებს ითამაშებს")
 
     async def on_reload(self, widget, **kwargs) -> None:
         try:
