@@ -116,4 +116,27 @@ rm -f "$IPA"
 
 echo
 echo "OK: $IPA  ($(du -h "$IPA" | cut -f1))"
+
+say "Verifying the IPA"
+APP_NAME="$(basename "$APP")"
+{
+  echo "IPA        : $IPA"
+  echo "size       : $(du -h "$IPA" | cut -f1)"
+  echo "app bundle : $APP_NAME"
+  echo
+  echo "== Payload =="
+  unzip -l "$IPA"
+  echo
+  echo "== Info.plist =="
+  /usr/libexec/PlistBuddy \
+    -c "Print :CFBundleIdentifier" \
+    -c "Print :CFBundleExecutable" \
+    -c "Print :CFBundleShortVersionString" \
+    -c "Print :MinimumOSVersion" \
+    "build-ipa/Payload/$APP_NAME/Info.plist" || true
+  echo
+  echo "== code signature of the app binary =="
+  codesign -dv "build-ipa/Payload/$APP_NAME/$FORMAL_NAME" 2>&1 | head -n 8 || true
+} | tee dist/ipa-report.txt
+
 echo "Next: sign it with iLoader (or Sideloadly / AltStore) and install it on the phone."

@@ -209,6 +209,21 @@ The IPA is **unsigned** (no Apple account needed to build it). Install it with
 iLoader / Sideloadly / AltStore, which re-sign it with your own certificate —
 exactly the same flow as any other sideloaded app on the phone.
 
+Notes from getting this green in CI:
+
+* the runner must be **`macos-26`**: Briefcase 0.4.6 refuses anything older
+  ("Xcode 26.0 is required; 16.4 is installed"), and `macos-15` ships Xcode 16;
+* Briefcase 0.4.x puts the project in `build/checkersbot_ios/ios/xcode/`, so the
+  script searches for `*.xcodeproj` instead of assuming a path;
+* the Python support package's *Process Python libraries* phase always runs
+  `codesign --sign "$EXPANDED_CODE_SIGN_IDENTITY"` on the modules it turns into
+  frameworks. With signing disabled that identity is empty and the build dies
+  with `no identity found`, so `build_ipa.sh` passes the ad-hoc identity `-`
+  (`EXPANDED_CODE_SIGN_IDENTITY="-"`) while the app itself stays unsigned;
+* every run publishes `ci-build.log` and `ci-ipa-report.txt` (the unzipped
+  payload listing + `Info.plist`) to the `ci-log` branch, which makes a failed
+  build diagnosable without downloading artifacts.
+
 ### Use it
 
 1. Open the app, sign in on jokergame.cc inside it (the WebView keeps the
