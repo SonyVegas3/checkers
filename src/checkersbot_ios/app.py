@@ -1,10 +1,18 @@
 """The Toga UI of the iOS app: a WebView with the bot attached to it.
 
-The window is deliberately tiny, because a phone screen belongs to the board:
+Toga 0.5 changed the startup contract: instead of overriding ``App.startup``
+and creating a window yourself, you hand Toga a **startup callable that returns
+the main window's content**.  Returning ``None`` (or making the method async,
+which Toga never awaits) leaves the app on an empty - black - window, which is
+exactly what the first build did.  So :meth:`CheckersBotApp.build_content`
+returns the root widget, and everything in it is wrapped in ``try/except``: a
+widget that cannot be created on the device is reported *on the screen* instead
+of a blank window.
 
-* a toolbar with **start/stop**, the engine depth and the seconds per move;
-* the ``toga.WebView`` that shows jokergame.cc (log in there, open a table);
-* a small log so you can see what the bot is doing.
+The screen is deliberately simple: a status line, start/stop + reload buttons,
+the ``toga.WebView`` that shows jokergame.cc (log in there, open a table) and a
+small log.  The page title is read through the same JavaScript bridge the bot
+uses, so a blank WebView is immediately distinguishable from a broken layout.
 
 The bot runs in a worker thread (a 3 s search must not freeze the UI) and talks
 to the WebView through :meth:`CheckersBotApp.evaluate`, which marshals every
@@ -15,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import traceback
 from typing import Any, Optional
 
 import toga
@@ -28,70 +37,76 @@ from .site import WebViewSite
 
 DEFAULT_URL = "https://jokergame.cc/checkers"
 LOG_LINES = 40
+DEPTH = 7            # engine search depth
+SECONDS = 3.0        # seconds per move
 
 
 class CheckersBotApp(toga.App):
     """A checkers board in a WebView, with the engine playing it."""
 
-    # -- construction ---------------------------------------------------
-    async def startup(self) -> None:
-        # the loop that owns the WebView; the worker thread posts to it
-        self._loop: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
+    def __init__(self) -> None:
+        # Toga 0.5: the startup callable returns the main window's content.
+        super().__init__(
+            formal_name="CheckersBot",
+            app_id="cc.jokergame.checkersbot",
+            startup=self.build_content,
+        )
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._bot_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
+    # -- window content -------------------------------------------------
+    def build_content(self, app, **kwargs) -> Any:
+        """Called by Toga before the main window is shown; returns the content."""
+        self._capture_loop()
+        try:
+            return self._build_ui()
+        except Exception:
+            return self._boot_error(traceback.format_exc())
+
+    def _build_ui(self) -> Any:
         self.start_button = toga.Button(
-            "▶ დაწყება", on_press=self.on_start, style=Pack(width=118, margin=6)
+            "▶ დაწყება", on_press=self.on_start, style=Pack(width=130, margin=6)
         )
         self.reload_button = toga.Button(
-            "↻", on_press=self.on_reload, style=Pack(width=44, margin=(6, 0, 6, 0))
+            "↻ განახლება", on_press=self.on_reload, style=Pack(width=120, margin=6)
         )
-        self.depth_input = toga.NumberInput(style=Pack(width=58, margin=(6, 4)))
-        self.time_input = toga.NumberInput(style=Pack(width=64, margin=(6, 4)))
-        self.webview = toga.WebView(style=Pack(flex=1))
+        self.status = toga.Label(
+            "CheckersBot 2.0 — იტვირთება...", style=Pack(margin=(6, 6, 0, 6))
+        )
+        self.webview = toga.WebView(style=Pack(flex=1), url=DEFAULT_URL)
+        self.webview.on_webview_load = self.on_webview_load
         self.log_view = toga.MultilineTextInput(
-            style=Pack(height=92, margin=(0, 6, 6, 6))
+            style=Pack(height=90, margin=6), readonly=True
         )
-        self.status = toga.Label("მზადაა", style=Pack(flex=1, margin=(0, 6)))
 
-        self.depth_input.value = 7
-        self.time_input.value = 3.0
-        self.log_view.readonly = True
-        self.log_view.value = ""
-
-        toolbar = toga.Box(
-            style=Pack(direction=ROW, align_items="center"),
-            children=[
-                self.start_button,
-                toga.Label("სიღრმე", style=Pack(margin=(6, 0, 6, 0))),
-                self.depth_input,
-                toga.Label("წმ/სვლა", style=Pack(margin=(6, 0, 6, 0))),
-                self.time_input,
-                self.reload_button,
-            ],
-        )
-        status_bar = toga.Box(
-            style=Pack(direction=ROW, align_items="center"),
-            children=[self.status],
+        buttons = toga.Box(
+            style=Pack(direction=ROW), children=[self.start_button, self.reload_button]
         )
         root = toga.Box(
-            style=Pack(direction=COLUMN, flex=1),
-            children=[toolbar, status_bar, self.webview, self.log_view],
+            style=Pack(direction=COLUMN, flex=1, background_color="#101418"),
+            children=[self.status, buttons, self.webview, self.log_view],
         )
+        self.log_line("აპი გაშვებულია — გახსენი მაგიდა და დააჭირე „დაწყებას“")
+        return root
 
-        self.main_window = toga.MainWindow(title=self.formal_name)
-        self.main_window.content = root
-        self.main_window.show()
-
-        self.webview.url = DEFAULT_URL
-        self.log_line("გახსენი მაგიდა ზემოთ ფანჯარაში და დააჭირე „დაწყებას“")
+    def _boot_error(self, text: str) -> Any:
+        """Paint the traceback on the screen - a black window tells us nothing."""
+        try:
+            print(text, flush=True)
+        except Exception:
+            pass
+        return toga.Box(
+            style=Pack(direction=COLUMN, flex=1, background_color="#2a0000"),
+            children=[toga.Label(text[-1500:], style=Pack(margin=8))],
+        )
 
     # -- JavaScript bridge ----------------------------------------------
     def evaluate(self, script: str) -> Any:
         """Run JavaScript in the WebView from the worker thread and wait for it."""
         loop = self._loop
         if loop is None or loop.is_closed():
-            raise SiteError("the app has not started yet")
+            raise SiteError("the app has not captured its event loop yet")
         future = asyncio.run_coroutine_threadsafe(self._evaluate(script), loop)
         return future.result(timeout=20)
 
@@ -100,6 +115,35 @@ class CheckersBotApp(toga.App):
             return await self.webview.evaluate_javascript(script)
         except Exception as error:            # a navigation in flight, a dead view
             raise SiteError(str(error)) from error
+
+    def _capture_loop(self) -> None:
+        if self._loop is not None:
+            return
+        try:
+            self._loop = self.loop          # Toga's own event loop
+        except Exception:
+            self._loop = None
+        if self._loop is None:
+            try:
+                self._loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._loop = None
+
+    def on_webview_load(self, widget, **kwargs) -> None:
+        self._capture_loop()
+        self.log_line("გვერდი ჩაიტვირთა")
+        try:
+            asyncio.ensure_future(self._report_title())
+        except RuntimeError:
+            pass
+
+    async def _report_title(self) -> None:
+        """Proves the JS bridge works, even when the page looks blank."""
+        try:
+            title = await self.webview.evaluate_javascript("document.title")
+            self.status.text = f"გვერდი: {title}"
+        except Exception as error:
+            self.log_line(f"! JS bridge: {error}")
 
     # -- logging --------------------------------------------------------
     def log_line(self, message: str) -> None:
@@ -114,28 +158,24 @@ class CheckersBotApp(toga.App):
         loop.call_soon_threadsafe(self._append_log, text)
 
     def _append_log(self, text: str) -> None:
-        current = self.log_view.value or ""
-        lines = (current + text + "\n").splitlines()[-LOG_LINES:]
-        self.log_view.value = "\n".join(lines) + "\n"
-        self.status.text = text[:120]
+        view = getattr(self, "log_view", None)
+        status = getattr(self, "status", None)
+        if view is not None:
+            current = view.value or ""
+            lines = (current + text + "\n").splitlines()[-LOG_LINES:]
+            view.value = "\n".join(lines) + "\n"
+        if status is not None:
+            status.text = text[:120]
 
     # -- start / stop ---------------------------------------------------
-    @staticmethod
-    def _number(value: Any, default: float) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return default
-
     def on_start(self, widget, **kwargs) -> None:
+        self._capture_loop()
         if self._bot_thread is not None and self._bot_thread.is_alive():
             self._stop.set()
             self.status.text = "ჩერდება..."
             self.start_button.text = "… ჩერდება"
             return
 
-        depth = int(max(1, self._number(self.depth_input.value, 7.0)))
-        seconds = self._number(self.time_input.value, 3.0)
         self._stop = threading.Event()
         self.log_view.value = ""
         self.start_button.text = "■ გაჩერება"
@@ -144,8 +184,8 @@ class CheckersBotApp(toga.App):
         site = WebViewSite(self.evaluate, log=self.log_line, log_dir=self.paths.logs)
         bot = CheckersBot(
             site,
-            depth=depth,
-            time_limit=seconds if seconds > 0 else None,
+            depth=DEPTH,
+            time_limit=SECONDS,
             poll=1.0,
             # the phone layout already fits; scaling it would only shrink the board
             apply_fit=False,
@@ -188,8 +228,9 @@ class CheckersBotApp(toga.App):
 
 def main() -> CheckersBotApp:
     """Briefcase/Toga entry point."""
-    return CheckersBotApp("CheckersBot", "cc.jokergame.checkersbot")
+    return CheckersBotApp()
 
 
 if __name__ == "__main__":
     main().main_loop()
+

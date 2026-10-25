@@ -228,7 +228,8 @@ Notes from getting this green in CI:
 
 1. Open the app, sign in on jokergame.cc inside it (the WebView keeps the
    cookies; the app never stores a password), open a table.
-2. Set the depth and seconds per move, press **▶ დაწყება**.
+2. Press **▶ დაწყება**. The engine plays depth 7 with 3 s per move (the `DEPTH` /
+   `SECONDS` constants at the top of `src/checkersbot_ios/app.py`).
 3. The bot waits for the board, probes your stones, plays the engine's move and
    repeats until the game ends; **■ გაჩერება** stops it after the current move.
    The log under the board shows the same lines as the desktop bot.
