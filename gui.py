@@ -373,16 +373,17 @@ class BotWindow:
         self.dryrun_var = tk.BooleanVar()
         self.noprobe_var = tk.BooleanVar()
         self.lose_var = tk.BooleanVar()
-        for text, variable in (
+        for index, (text, variable) in enumerate((
             ("უხილავი (headless)", self.headless_var),
             ("ბრაუზერის დახურვა დასრულების შემდეგ", self.closebrowser_var),
             ("დაფის ტრეისი ლოგში", self.trace_var),
             ("მხოლოდ ჩვენება (dry-run)", self.dryrun_var),
             ("probe-ის გამორთვა", self.noprobe_var),
-            ("მარცხი (ადამიანურად)", self.lose_var),
-        ):
-            ttk.Checkbutton(checks, text=text, variable=variable).pack(
-                side="left", padx=(0, 14))
+            ("😞 მარცხი (ადამიანურად)", self.lose_var),
+        )):
+            # a grid, not a single row: six checkboxes do not fit the window
+            ttk.Checkbutton(checks, text=text, variable=variable).grid(
+                row=index // 3, column=index % 3, sticky="w", padx=(0, 18), pady=2)
 
         # 5) buttons --------------------------------------------------------
         buttons = ttk.Frame(outer)
@@ -395,6 +396,8 @@ class BotWindow:
         self.diagnose_button = ttk.Button(buttons, text="✔ წესების შემოწმება",
                                           command=self.on_diagnose)
         self.diagnose_button.pack(side="left", padx=(8, 0))
+        self.lose_button = ttk.Button(buttons, text="😞 მარცხი", command=self.on_lose)
+        self.lose_button.pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="📂 ლოგები",
                    command=lambda: self._open_path(self.logdir_var.get())).pack(
             side="left", padx=(8, 0))
@@ -639,6 +642,14 @@ class BotWindow:
         self.stop_event.set()
         self.log_line("… გაჩერების მოთხოვნა (მიმდინარე სვლის შემდეგ)")
         self.status_var.set("ჩერდება…")
+
+    def on_lose(self) -> None:
+        """Ask the running bot to lose this game (with a believable weak move)."""
+        if self.worker is None or not self.worker.is_alive():
+            messagebox.showinfo(APP_NAME, "ჯერ დააჭირე „დაწყებას“.")
+            return
+        self.lose_var.set(True)
+        self.log_line("😞 მარცხი ჩართულია - ბოტი სუსტ სვლებს ითამაშებს")
 
     def save_settings(self, quiet: bool = False) -> None:
         try:

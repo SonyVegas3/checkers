@@ -11,6 +11,7 @@ clicking it and verifying every step - is shared by both.
 from __future__ import annotations
 
 import random
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -450,11 +451,11 @@ class CheckersBot:
         if self._lose_requested():
             move = self._choose_weak_move(board, legal)
             if move is None:
-                move = self.ai.choose_move(board, history=self.history)
+                move = self._search_move(board)
             else:
                 self.log("  (losing on purpose - playing a weaker move)")
         else:
-            move = self.ai.choose_move(board, history=self.history)
+            move = self._search_move(board)
         if move is None:
             self.failures += 1
             return None
@@ -528,8 +529,7 @@ class CheckersBot:
                 if move is not None:
                     self.log("  (losing on purpose - playing a weaker move)")
             else:
-                move = self.ai.choose_move(board, history=self.history,
-                                           allowed=candidates)
+                move = self._search_move(board, candidates)
             if move is not None:
                 self.log(f"our move (site-synced): {move.notation()}   [{self.ai.stats}]")
                 if self.dry_run:
@@ -854,6 +854,50 @@ class CheckersBot:
             self._chat_offer_since = None
         return waiting
 
+    def _watch_offers(self) -> None:
+        """Look at the page once and answer a stake/chat dialog if one is up.
+
+        Called from the quiet parts of a turn (the "thinking" pause and while the
+        engine searches) so the site's 10-second stake dialog is never missed.
+        """
+        try:
+            state = self.site.read_state()
+        except Exception:
+            return
+        if state is not None:
+            self._answer_offers(state)
+
+    def _search_move(self, board: Board, allowed=None) -> Optional[Move]:
+        """Run the engine while still answering mid-game dialogs.
+
+        The engine needs seconds; the site's "raise the stake?" dialog only waits
+        ~10 s before it disappears, so the page is polled (and the dialog
+        answered) while the search runs.  The search works on its own board copy
+        and never touches the page, so a worker thread is safe.
+        """
+        outcome: Dict[str, object] = {}
+
+        def work() -> None:
+            try:
+                outcome["move"] = self.ai.choose_move(
+                    board, history=self.history, allowed=allowed
+                )
+            except Exception as error:               # keep the move loop alive
+                outcome["error"] = error
+
+        worker = threading.Thread(target=work, name="checkers-search", daemon=True)
+        worker.start()
+        self._watch_offers()                # anything already on screen
+        while worker.is_alive():
+            worker.join(0.4)
+            self._watch_offers()
+        error = outcome.get("error")
+        if error is not None:
+            self.log(f"! search failed: {error}")
+            return None
+        move = outcome.get("move")
+        return move if isinstance(move, Move) else None
+
     def _think(self) -> None:
         """Wait like a human before playing.
 
@@ -874,7 +918,8 @@ class CheckersBot:
         while time.time() < deadline:
             if self._stop_requested():
                 return
-            time.sleep(min(0.25, max(0.0, deadline - time.time())))
+            self._watch_offers()
+            time.sleep(min(0.4, max(0.0, deadline - time.time())))
 
     def _enter_lobby_game(self, timeout: float = 45.0) -> bool:
         """Walk the lobby dialogs quickly until a table opens.
@@ -890,7 +935,7 @@ class CheckersBot:
         last_click = 0.0
         searching_since: Optional[float] = None
         self.log("lobby: looking for a table")
-        while time.time() < deadline:
+        while True:
             if self._stop_requested():
                 return False
             state = self.site.read_state()
@@ -906,20 +951,25 @@ class CheckersBot:
                     self.log("the opponent search hangs - cancelling it")
                     self.site.cancel_search()
                     searching_since = None
+                # a healthy search may take minutes: keep waiting instead of
+                # giving up (only the *dialog* walking has a deadline below)
+                deadline = now + max(10.0, timeout)
                 time.sleep(0.5)
                 continue
             if status == "error":
                 self.log("the site could not find an opponent (error) - cancelling")
                 self.site.cancel_search()
                 searching_since = None
+                deadline = now + max(10.0, timeout)
                 time.sleep(1.0)
                 continue
             searching_since = None
+            if now > deadline:
+                return False
             if now - last_click >= 0.7:
                 self.site.enter_game(self.coins)
                 last_click = now
             time.sleep(0.3)
-        return False
 
     def _reset_for_new_game(self) -> None:
         """Forget the previous table - a rematch can swap the colours."""
@@ -996,16 +1046,17 @@ class CheckersBot:
             return False
 
         self.log("leaving the table and looking for a new opponent")
-        for attempt in range(3):
-            if self._stop_requested():
-                return False
+        attempts = 0
+        while not self._stop_requested():
+            attempts += 1
             self.site.open_lobby()
             time.sleep(1.5)
             if self._enter_lobby_game(timeout=45.0):
                 self.log("new table found - playing")
                 return True
-            self.log(f"no table yet - trying again ({attempt + 1}/3)")
-        self.log("! no new table was found")
+            self.log(f"no table yet - searching again ({attempts}. attempt, "
+                     f"it keeps trying until you stop the bot)")
+            time.sleep(2.0)
         return False
 
     def run(self, max_moves: int = 0, once: bool = False, max_games: int = 0) -> int:

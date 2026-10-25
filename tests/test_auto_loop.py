@@ -269,5 +269,19 @@ class AutoLoopTests(unittest.TestCase):
         self.assertFalse(bot._lose_requested())
 
 
+    def test_an_offer_is_answered_while_the_engine_thinks(self):
+        board = Board()
+        offered = SiteState(_raw(False, 10, opponent_coins=5000))
+        site = FakeSite([offered])
+        bot = self._bot(site, depth=6, time_limit=1.0)
+
+        move = bot._search_move(board)              # the search runs in a thread
+        self.assertIsNotNone(move)
+        self.assertIn(move, board.generate_moves())
+        # the page is polled while the engine thinks, so the 10 s stake dialog
+        # is answered instead of expiring
+        self.assertEqual(site.coin_accepts, 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

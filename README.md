@@ -425,17 +425,21 @@ click* (`Play a game` → `Random people` → stake are three separate dialogs, 
 the board cannot appear before the last one). The bot now clicks through them as
 fast as they render, keeps polling for the table, and — if the site's
 "Searching in progress" dialog reports an error — presses its own **Cancel**
-button and starts the search again instead of stalling.
+button and starts the search again instead of stalling. A healthy search is
+allowed to run as long as it needs, and when no table comes back the bot **keeps
+searching until you stop it** (it only logs `no table yet - searching again`).
 
 ### Mid-game dialogs (bigger stake, chat)
 
 Two dialogs can appear in the middle of a game and both used to freeze the bot:
 
 * **the opponent offers a bigger stake** — the site sets
-  `game_data.opponent.coins > 0` and shows a dialog that is **not cancelable**, so
-  nothing on the board can be clicked until it is answered. The bot **always
-  accepts** and logs `the opponent offers to play for 5000 coins - accepted`
-  (the stake only ever grows, and the offer is answered exactly once);
+  `game_data.opponent.coins > 0` and shows a dialog that is **not cancelable** and
+  only lives for ~10 s. The bot answers it immediately: the page is polled during
+  the "thinking" pause **and while the engine searches** (the search runs in a
+  worker thread, so a mid-search offer is still accepted in time). It **always
+  accepts**, logs `the opponent offers to play for 5000 coins - accepted
+  (clicked)` and answers each offer exactly once;
 * **the opponent wants to chat** — `game_data.opponent.chat == 'yes'` shows a
   prompt that covers the board. The bot leaves it alone for `--chat-wait`
   seconds, so you can accept it yourself while watching, and then declines it
@@ -453,8 +457,9 @@ checked.
 
 ### Losing on purpose („მარცხი (ადამიანურად)“)
 
-Both UIs have a switch that makes the bot **lose the current game** — the panel
-checkbox in group 4, the **😞 მარცხი** button in the iOS app (CLI: `--lose`):
+Both UIs have a switch that makes the bot **lose the current game** — the
+**😞 მარცხი** button next to Start/Stop in the panel (it ticks the checkbox in
+group 4), the same **😞 მარცხი** button in the iOS app, and `--lose` on the CLI:
 
 * every move of that game is played from a **shallow ranking of all legal
   moves** (`CheckersAI.rank_moves`, worst → best);
