@@ -29,6 +29,7 @@ build-ios/
 build-ipa/
 *.ipa
 xcodebuild-ios.log
+build.log
 
 # editors / os
 .vscode/

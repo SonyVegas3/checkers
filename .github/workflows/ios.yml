@@ -16,6 +16,10 @@ on:
     tags:
       - "ios-*"
 
+# the failure log is pushed to the "ci-log" branch, which needs write access
+permissions:
+  contents: write
+
 jobs:
   ipa:
     # macos-15 ships Xcode 16; switch to macos-26 if GitHub retires this image.
@@ -37,7 +41,9 @@ jobs:
         run: python -m unittest tests.test_engine tests.test_ios_site.BridgeTests
 
       - name: Build the unsigned IPA
-        run: bash scripts/build_ipa.sh
+        run: |
+          set -o pipefail
+          bash scripts/build_ipa.sh 2>&1 | tee build.log
 
       - name: Upload the Xcode build log (only when the build fails)
         if: failure()
@@ -47,6 +53,17 @@ jobs:
           path: xcodebuild-ios.log
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Publish the build log to the "ci-log" branch (only when the build fails)
+        if: failure()
+        run: |
+          test -f build.log || echo "no build.log was produced" > build.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B ci-log
+          git add -f build.log
+          git commit -m "ci: build log for run ${GITHUB_RUN_NUMBER}" || true
+          git push -f origin ci-log
 
       - name: List the artefacts
         run: ls -la dist

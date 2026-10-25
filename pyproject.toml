@@ -32,6 +32,6 @@ sources = ["src/checkersbot_ios", "checkersbot"]
 test_sources = ["tests"]
 requires = ["toga>=0.5"]
 
-[tool.briefcase.app.checkersbot_ios.iOS]
-# Python-Apple-support needs 13.0 or newer; an iPhone 17 Pro runs far above it.
-min_os_version = "13.0"
+# NB: no min_os_version here on purpose - Briefcase then uses the minimum that
+# the Python-Apple-support package it downloads actually requires (a too-low
+# value is a hard error, a too-high one needlessly drops older phones).
