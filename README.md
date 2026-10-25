@@ -232,11 +232,17 @@ Notes from getting this green in CI:
 
 1. Open the app, sign in on jokergame.cc inside it (the WebView keeps the
    cookies; the app never stores a password), open a table.
-2. Press **▶ დაწყება**. The engine plays depth 7 with 3 s per move (the `DEPTH` /
+2. Press **▶ დაწყება**. The engine plays depth 9 with 5 s per move (the `DEPTH` /
    `SECONDS` constants at the top of `src/checkersbot_ios/app.py`).
 3. The bot waits for the board, probes your stones, plays the engine's move and
    repeats until the game ends; **■ გაჩერება** stops it after the current move.
    The log under the board shows the same lines as the desktop bot.
+4. While the bot runs the app keeps the screen awake (`idleTimerDisabled`), so
+   the game continues when nobody touches the phone. iOS suspends apps that go
+   to the background, so **closing the app pauses the game** — a bot that has to
+   keep playing while the phone is in your pocket needs to run on a PC/server.
+   If no table is open the app gives up after 25 s and says so instead of
+   waiting two minutes.
 
 What the app deliberately does not do: walk the lobby, pick a stake, sign in
 automatically, or take screenshots (there is no such API for an app's own
@@ -293,6 +299,11 @@ only plays what the server offers:
    (`item-y` counted from the other side), a wrong `--side` or a wrong
    `--site-color` therefore correct themselves. After the first calibration the
    side is never switched again — that would wreck a good board model.
+   Probing is the slow part of a turn (a click plus a board read each), so the
+   calibration stops after three answers, the pieces the server highlights
+   (forced captures) are asked first, and a probe that stays silent for 1.5 s
+   counts as "not offered". The first move of a game therefore no longer clicks
+   every piece, which makes starting much quicker.
 3. **Restriction** – the engine only gets to choose among moves whose *first
    landing* the site advertised (`site_legal_moves`), so a jump can never be
    replaced by a quiet move and a move into an unoffered square is impossible.

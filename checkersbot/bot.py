@@ -197,7 +197,7 @@ class CheckersBot:
         ]
 
     def _probe_stone(
-        self, square_index: int, stone: Dict[str, object], timeout: float = 3.0
+        self, square_index: int, stone: Dict[str, object], timeout: float = 1.5
     ) -> Optional[List[int]]:
         """Click one of our stones and return the squares the site offers.
 
@@ -228,15 +228,23 @@ class CheckersBot:
         return None
 
     def probe_moves(
-        self, state: SiteState, origins: Optional[Sequence[int]] = None
+        self,
+        state: SiteState,
+        origins: Optional[Sequence[int]] = None,
+        limit: Optional[int] = None,
     ) -> Dict[int, List[int]]:
         """Ask the site for the legal destinations of our stones.
 
         Returns ``{from_square: [first_landing, ...]}`` exactly as the site
         answers them, so the engine can be restricted to moves the server accepts.
+
+        Every probe is a real click plus a board read, so this is the slowest
+        part of a turn: ``limit`` stops after that many answers (the calibration
+        only needs a couple of them) and stones the site highlights - the ones a
+        forced capture allows - are asked first.
         """
         if origins is None:
-            origins = self._clickable_stones(state)
+            origins = self._probe_order(state)
         if not self.site._wait_can_click(2500):
             # the client refuses clicks until the server hands the turn over, so a
             # probe now would only raise toasts and read an empty board
@@ -244,6 +252,8 @@ class CheckersBot:
             return {}
         probe: Dict[int, List[int]] = {}
         for index in origins:
+            if limit is not None and sum(1 for offers in probe.values() if offers) >= limit:
+                break
             stone = state.stone_at(index)
             if stone is None or not stone.get("clickable"):
                 continue
@@ -253,6 +263,16 @@ class CheckersBot:
             probe[index] = offers
             state = self.site.read_state() or state
         return probe
+
+    def _probe_order(self, state: SiteState) -> List[int]:
+        """Clickable stones, the ones the site highlights (forced capture) first."""
+        clickable = self._clickable_stones(state)
+        highlighted = state.highlighted_stones()
+        if not highlighted:
+            return clickable
+        first = [index for index in clickable if index in highlighted]
+        rest = [index for index in clickable if index not in highlighted]
+        return first + rest
 
     def _calibrate(self, state: SiteState, probe: Dict[int, List[int]]) -> bool:
         """Decide which engine colour we are by matching the site's move offers."""
@@ -346,7 +366,9 @@ class CheckersBot:
         # 1) settle which engine colour we are - the site's answers decide it
         if not self.calibrated:
             if self.use_probe:
-                probe = self.probe_moves(state)
+                # two or three answers are enough to tell the orientation apart,
+                # and every probe costs a click plus a board read
+                probe = self.probe_moves(state, limit=3)
                 self.probe_map = probe
                 if not self._calibrate(state, probe):
                     self._log_current_view()
@@ -680,6 +702,7 @@ class CheckersBot:
             return True
         if not self.lobby_walk:
             # "start from an already open table": never touch the lobby, just wait
+            self.log("waiting for an open table - open one in the browser")
             if self.site.wait_for_board(timeout_ms=int(self.turn_timeout * 1000)):
                 self._after_board()
                 return True

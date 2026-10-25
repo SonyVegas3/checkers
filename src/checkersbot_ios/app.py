@@ -22,6 +22,7 @@ JavaScript call onto the Toga event loop and blocks the worker until it returns.
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 import traceback
 from typing import Any, Optional
@@ -168,6 +169,24 @@ class CheckersBotApp(toga.App):
             status.text = text[:120]
 
     # -- start / stop ---------------------------------------------------
+    def _set_screen_awake(self, awake: bool) -> None:
+        """Keep the phone awake while the bot plays.
+
+        iOS suspends an app that goes to the background, and a game needs the
+        WebView alive, so the practical answer is to stop the screen from
+        locking: ``idleTimerDisabled`` keeps the app (and the game) running even
+        when nobody touches the phone.
+        """
+        if sys.platform != "ios":
+            return
+        try:
+            from rubicon.objc import ObjCClass
+
+            UIApplication = ObjCClass("UIApplication")
+            UIApplication.sharedApplication.idleTimerDisabled = bool(awake)
+        except Exception as error:                  # never break the app for this
+            self.log_line(f"  (screen-awake unavailable: {error})")
+
     def on_start(self, widget, **kwargs) -> None:
         self._capture_loop()
         if self._bot_thread is not None and self._bot_thread.is_alive():
@@ -187,6 +206,8 @@ class CheckersBotApp(toga.App):
             depth=DEPTH,
             time_limit=SECONDS,
             poll=1.0,
+            # fail fast when no table is open (the panel's 120 s is pointless here)
+            turn_timeout=25.0,
             # the phone layout already fits; scaling it would only shrink the board
             apply_fit=False,
             # the user opens the table; the app never walks the lobby or logs in
@@ -200,7 +221,10 @@ class CheckersBotApp(toga.App):
         self._bot_thread = threading.Thread(
             target=self._run_bot, args=(bot,), name="checkersbot", daemon=True
         )
+        self._set_screen_awake(True)
         self._bot_thread.start()
+        self.log_line("ბოტი მუშაობს — ეკრანი არ ჩაქრება (დატოვე აპი გახსნილი)")
+        self.status.text = "ვეძებ მაგიდას..."
 
     def _run_bot(self, bot: CheckersBot) -> None:
         code = 1
@@ -216,6 +240,7 @@ class CheckersBotApp(toga.App):
                 loop.call_soon_threadsafe(self._bot_finished, code)
 
     def _bot_finished(self, code: int) -> None:
+        self._set_screen_awake(False)
         self.start_button.text = "▶ დაწყება"
         self.status.text = "დასრულდა" if code == 0 else f"შეჩერდა ({code})"
 
