@@ -100,7 +100,15 @@ try {
     Write-Host "==> pushing to $RepoUrl"
     git push -u origin $Branch
     if ($LASTEXITCODE -ne 0) {
-        throw "git push failed - log in when Git asks (browser window / personal access token)"
+        Write-Host ""
+        Write-Host "! git push failed." -ForegroundColor Red
+        Write-Host "  * If Git asked for a password: use a personal access token, not your"
+        Write-Host "    GitHub password (Settings -> Developer settings -> Tokens)."
+        Write-Host "  * If the repository already has commits (a README from the web UI),"
+        Write-Host "    create it EMPTY instead, or run:"
+        Write-Host "        git pull --rebase origin $Branch"
+        Write-Host "    and then this script again."
+        throw "push failed"
     }
 
     Write-Host ""
