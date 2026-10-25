@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Mock checkers board (test harness for web_bot.py)</title>
+<style>
+  body { font-family: sans-serif; background: #222; color: #eee; margin: 16px; }
+  .game-table { position: relative; width: 480px; height: 480px; background: #150600; }
+  .game-square { position: relative; display: inline-block; width: 12.5%; height: 12.5%;
+                 box-sizing: border-box; vertical-align: top; }
+  .game-square[item-color="white"] { background: #d9c7a7; }
+  .game-square[item-color="black"] { background: #6b4a2f; }
+  .game-square.active::before { content: ""; position: absolute; inset: 0;
+                                background: rgba(255, 160, 0, 0.6); cursor: pointer; }
+  .game-stone { position: absolute; width: 12.5%; height: 12.5%; border-radius: 50%;
+                box-sizing: border-box; }
+  .game-stone[stone-color="white"] { background: #f4f4f4; border: 3px solid #333; }
+  .game-stone[stone-color="black"] { background: #1b1b1b; border: 3px solid #000; }
+  .game-stone[stone-king="yes"] { outline: 4px solid #f0c555; outline-offset: -8px; }
+  .game-stone[stone-clickable="yes"] { cursor: pointer; }
+  .game-finish-dialog { margin-top: 12px; padding: 8px; background: #444; }
+</style>
+</head>
+<body>
+<h3 id="status">mock checkers - loading</h3>
+<div class="game-table" id="table"></div>
+<script>
+"use strict";
+
+const PARAMS = new URLSearchParams(window.location.search);
+const FLIP = PARAMS.get("flip") === "1";          // render the board rotated 180 degrees
+const FORCED = PARAMS.get("forced") === "1";      // the site enforces mandatory captures
+const SCENARIO = PARAMS.get("scenario") || "standard";
+
+const TABLE = document.getElementById("table");
+const STATUS = document.getElementById("status");
+const HUMAN_COLOR = "white";     // the bot always plays white here
+const OPPONENT_COLOR = "black";
+
+let stones = [];                 // {id, x, y, color, king}
+let selected = null;
+let turn = HUMAN_COLOR;
+let nextId = 1;
+let finished = false;
+
+// small event log so the tests (or a developer) can see what the board did
+const MOCK_LOG = [];
+window.__mockLog = MOCK_LOG;
+window.__mockFlags = {flip: FLIP, forced: FORCED, scenario: SCENARIO};
+function note(message) { MOCK_LOG.push(message); }
+
+const inBoard = (x, y) => x >= 1 && x <= 8 && y >= 1 && y <= 8;
+const playable = (x, y) => (x + y) % 2 === 1;
+
+// visual coordinates: the real client positions stones with item-x/item-y, and a
+// flipped board simply mirrors them - everything the bot reads goes through here
+const visX = (x) => (FLIP ? 9 - x : x);
+const visY = (y) => (FLIP ? 9 - y : y);
+const absOf = (x, y) => (visY(y) - 1) * 8 + visX(x);
+const stoneAt = (x, y) => stones.find((s) => s.x === x && s.y === y) || null;
+const stoneEl = (stone) => document.querySelector('.game-stone[stone-id="' + stone.id + '"]');
+const squareEl = (x, y) =>
+  document.querySelector('.game-square[item-absolute-id="' + absOf(x, y) + '"]');
+
+function directions(stone) {
+  if (stone.king) return [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+  // y grows downwards: white moves up (dy = -1), black moves down (dy = +1)
+  return stone.color === HUMAN_COLOR ? [[-1, -1], [1, -1]] : [[-1, 1], [1, 1]];
+}
+
+function legalMoves(stone) {
+  const moves = [];
+  for (const [dx, dy] of directions(stone)) {
+    const tx = stone.x + dx, ty = stone.y + dy;
+    if (!inBoard(tx, ty)) continue;
+    const occupant = stoneAt(tx, ty);
+    if (!occupant) {
+      moves.push({x: tx, y: ty, captured: null});
+      continue;
+    }
+    if (occupant.color === stone.color) continue;
+    const lx = stone.x + 2 * dx, ly = stone.y + 2 * dy;
+    if (!inBoard(lx, ly) || stoneAt(lx, ly)) continue;
+    moves.push({x: lx, y: ly, captured: occupant});
+  }
+  return moves;
+}
+
+// the moves the *site* offers for a stone (this is what web_bot.py has to respect)
+function siteMoves(stone) {
+  const moves = legalMoves(stone);
+  if (!FORCED) return moves;
+  const mustCapture = stones.some(
+    (other) => other.color === turn && legalMoves(other).some((m) => m.captured)
+  );
+  return mustCapture ? moves.filter((m) => m.captured) : moves;
+}
+
+function buildTable() {
+  TABLE.innerHTML = "";
+  // the cells are laid out in *visual* order (the DOM order decides the layout),
+  // while the click handler works with game coordinates
+  for (let vy = 1; vy <= 8; vy++) {
+    for (let vx = 1; vx <= 8; vx++) {
+      const x = FLIP ? 9 - vx : vx;
+      const y = FLIP ? 9 - vy : vy;
+      const cell = document.createElement("div");
+      cell.className = "game-square";
+      if (playable(x, y)) {
+        cell.setAttribute("item-absolute-id", String((vy - 1) * 8 + vx));
+        cell.setAttribute("item-x", String(vx));
+        cell.setAttribute("item-y", String(vy));
+        cell.setAttribute("item-color", "black");
+        cell.addEventListener("click", () => onSquareClick(cell, x, y));
+      } else {
+        cell.setAttribute("item-color", "white");
+      }
+      TABLE.appendChild(cell);
+    }
+    TABLE.appendChild(document.createElement("div"));   // row break, like the real site
+  }
+}
+
+function renderStone(stone) {
+  let el = stoneEl(stone);
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "game-stone";
+    el.setAttribute("stone-id", String(stone.id));
+    el.addEventListener("click", () => onStoneClick(stone));
+    TABLE.appendChild(el);
+  }
+  el.setAttribute("stone-absolute", String(absOf(stone.x, stone.y)));
+  el.setAttribute("stone-color", stone.color);
+  el.setAttribute("stone-king", stone.king ? "yes" : "no");
+  el.style.left = ((visX(stone.x) - 1) * 12.5) + "%";
+  el.style.top = ((visY(stone.y) - 1) * 12.5) + "%";
+}
+
+function removeStone(stone) {
+  const el = stoneEl(stone);
+  if (el) el.remove();
+  stones = stones.filter((s) => s !== stone);
+}
+
+function refreshClickable() {
+  for (const stone of stones) {
+    const el = stoneEl(stone);
+    if (!el) continue;
+    const clickable = !finished && turn === HUMAN_COLOR && stone.color === HUMAN_COLOR;
+    el.setAttribute("stone-clickable", clickable ? "yes" : "no");
+  }
+}
+
+function clearDestinations() {
+  document.querySelectorAll(".game-square.active").forEach((el) => el.classList.remove("active"));
+}
+
+function clearHighlights() {
+  document.querySelectorAll(".game-stone.highlight").forEach((el) => el.classList.remove("highlight"));
+}
+
+function showDestinations() {
+  clearDestinations();
+  if (!selected) return;
+  const moves = siteMoves(selected);
+  note("destinations for " + selected.id + " at " + selected.x + "," + selected.y + ": " +
+       moves.map((m) => m.x + "," + m.y).join(" "));
+  for (const move of moves) {
+    const el = squareEl(move.x, move.y);
+    if (el) el.classList.add("active");
+  }
+}
+
+function updateStatus() {
+  if (finished) return;
+  STATUS.textContent = turn === HUMAN_COLOR
+    ? "white (bot) to move"
+    : "black (scripted opponent) to move";
+}
+
+function hasMoves(color) {
+  return stones.some((stone) => stone.color === color && legalMoves(stone).length > 0);
+}
+
+function finishGame(winner) {
+  finished = true;
+  selected = null;
+  clearDestinations();
+  refreshClickable();
+  STATUS.textContent = "game over - " + winner + " wins";
+  const dialog = document.createElement("div");
+  dialog.className = "game-finish-dialog";
+  dialog.textContent = winner + " wins";
+  document.body.appendChild(dialog);
+}
+
+function finishTurn() {
+  selected = null;
+  clearDestinations();
+  turn = turn === HUMAN_COLOR ? OPPONENT_COLOR : HUMAN_COLOR;
+  refreshClickable();
+  updateStatus();
+  if (!hasMoves(turn)) {
+    finishGame(turn === HUMAN_COLOR ? OPPONENT_COLOR : HUMAN_COLOR);
+    return;
+  }
+  if (turn === OPPONENT_COLOR) setTimeout(opponentMove, 300);
+}
+
+function applyMove(stone, move) {
+  if (move.captured) removeStone(move.captured);
+  stone.x = move.x;
+  stone.y = move.y;
+  const crowned = !stone.king &&
+    ((stone.color === HUMAN_COLOR && stone.y === 1) ||
+     (stone.color === OPPONENT_COLOR && stone.y === 8));
+  if (crowned) stone.king = true;
+  renderStone(stone);
+  clearHighlights();
+
+  // A chained jump keeps the stone selected (exactly like jokergame.cc),
+  // but crowning a man always ends the move (English draughts rules).
+  const followUps = move.captured ? siteMoves(stone).filter((m) => m.captured) : [];
+  if (followUps.length > 0 && !crowned) {
+    selected = stone;
+    showDestinations();
+    updateStatus();
+    return;
+  }
+  finishTurn();
+}
+
+function onStoneClick(stone) {
+  const clickable = stoneEl(stone).getAttribute("stone-clickable");
+  note("stoneClick id=" + stone.id + " at " + stone.x + "," + stone.y +
+       " color=" + stone.color + " clickable=" + clickable + " turn=" + turn);
+  if (finished || turn !== HUMAN_COLOR || stone.color !== HUMAN_COLOR) return;
+  if (clickable !== "yes") return;
+
+  if (siteMoves(stone).length === 0) {
+    // the site refuses this piece and highlights the ones that must move instead
+    selected = null;
+    clearDestinations();
+    clearHighlights();
+    for (const other of stones) {
+      if (other.color === turn && siteMoves(other).length > 0) {
+        const el = stoneEl(other);
+        if (el) el.classList.add("highlight");
+      }
+    }
+    note("stone " + stone.id + " has no legal move - highlighting the legal stones");
+    return;
+  }
+
+  clearHighlights();
+  selected = stone;
+  showDestinations();
+}
+
+function onSquareClick(cell, x, y) {
+  note("squareClick " + x + "," + y + " active=" + cell.classList.contains("active"));
+  if (finished || !selected || turn !== HUMAN_COLOR) return;
+  if (!cell.classList.contains("active")) return;
+  const move = siteMoves(selected).find((m) => m.x === x && m.y === y);
+  if (!move) return;
+  applyMove(selected, move);
+}
+
+function opponentMove() {
+  if (finished || turn !== OPPONENT_COLOR) return;
+  const options = [];
+  for (const stone of stones) {
+    if (stone.color !== OPPONENT_COLOR) continue;
+    for (const move of siteMoves(stone)) options.push([stone, move]);
+  }
+  if (options.length === 0) {
+    finishGame(HUMAN_COLOR);
+    return;
+  }
+  const [stone, move] = options[Math.floor(Math.random() * options.length)];
+  applyMove(stone, move);
+}
+
+function addStone(x, y, color, king) {
+  stones.push({id: nextId++, x: x, y: y, color: color, king: !!king});
+}
+
+function reset() {
+  document.querySelectorAll(".game-stone").forEach((el) => el.remove());
+  document.querySelectorAll(".game-finish-dialog").forEach((el) => el.remove());
+  clearDestinations();
+  clearHighlights();
+  stones = [];
+  selected = null;
+  turn = HUMAN_COLOR;
+  finished = false;
+  nextId = 1;
+
+  if (SCENARIO === "doublejump") {
+    // white b2 can capture twice: b2xc3 (landing d4) then x e5 (landing f6)
+    addStone(2, 7, HUMAN_COLOR);
+    addStone(7, 8, HUMAN_COLOR);
+    addStone(3, 6, OPPONENT_COLOR);
+    addStone(5, 4, OPPONENT_COLOR);
+    addStone(1, 2, OPPONENT_COLOR);
+  } else {
+    for (let y = 1; y <= 3; y++) {
+      for (let x = 1; x <= 8; x++) {
+        if (playable(x, y)) addStone(x, y, OPPONENT_COLOR);
+      }
+    }
+    for (let y = 6; y <= 8; y++) {
+      for (let x = 1; x <= 8; x++) {
+        if (playable(x, y)) addStone(x, y, HUMAN_COLOR);
+      }
+    }
+  }
+
+  stones.forEach(renderStone);
+  refreshClickable();
+  updateStatus();
+  note("reset scenario=" + SCENARIO + " flip=" + FLIP + " forced=" + FORCED);
+}
+
+buildTable();
+reset();
+</script>
+</body>
+</html>

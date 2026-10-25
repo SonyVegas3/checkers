@@ -1,0 +1,42 @@
+# virtual environment
+.venv/
+.venv-ios/
+venv/
+env/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# browser automation
+.browser-profile/
+.browser-profile-*/
+logs/
+
+# packaged exe / build leftovers
+dist/
+build/
+*.spec
+.testappdata/
+
+# iOS build output (Briefcase + scripts/build_ipa.sh)
+iOS/
+build-ios/
+build-ipa/
+*.ipa
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# local backups / scratch output
+.backup/
+briefcase-out.txt
+selfplay.txt
+

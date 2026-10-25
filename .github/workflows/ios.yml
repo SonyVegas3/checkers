@@ -1,0 +1,50 @@
+name: iOS app
+
+# Builds the iPhone/iPad app with BeeWare Briefcase on a GitHub macOS runner and
+# uploads an **unsigned** .ipa.  iOS binaries cannot be produced on Windows, so
+# this workflow is the "no Mac at home" path.
+#
+# Briefcase only builds for the simulator and refuses to create a distributable
+# IPA, so scripts/build_ipa.sh does the last step: it runs xcodebuild for the
+# iphoneos SDK with code signing disabled and wraps the .app in Payload/.  The
+# result is not signed for any device - iLoader / Sideloadly / AltStore re-sign
+# it with your own certificate when you install it (no Apple account needed).
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "ios-*"
+
+jobs:
+  ipa:
+    # macos-15 ships Xcode 16; switch to macos-26 if GitHub retires this image.
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Briefcase
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "briefcase>=0.4"
+
+      - name: Engine + iOS bridge tests (no browser needed)
+        run: python -m unittest tests.test_engine tests.test_ios_site.BridgeTests
+
+      - name: Build the unsigned IPA
+        run: bash scripts/build_ipa.sh
+
+      - name: List the artefacts
+        run: ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CheckersBot-unsigned-ipa
+          path: dist/*.ipa
+          if-no-files-found: error
+          retention-days: 30

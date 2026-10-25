@@ -1,0 +1,37 @@
+# Briefcase project: this builds the iOS app (iphone / iPad) from the very same
+# bot the desktop uses.  It does not replace requirements.txt - the desktop
+# tools keep running straight from the repo root.
+#
+#   macOS:  python -m pip install briefcase
+#           bash scripts/build_ipa.sh     -> dist/CheckersBot-unsigned.ipa
+#
+# Briefcase itself stops at the Xcode project / simulator build (it refuses to
+# make a distributable IPA); scripts/build_ipa.sh runs the device build and
+# wraps the .app in Payload/.  See "iOS app" in README.md for the whole story.
+
+[tool.briefcase]
+project_name = "CheckersBot"
+bundle = "cc.jokergame"
+version = "2.0.0"
+url = "https://jokergame.cc/checkers"
+author = "CheckersBot"
+author_email = "checkersbot@localhost"
+# PEP 639: a custom (non-SPDX) licence still needs a valid SPDX expression.
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
+
+[tool.briefcase.app.checkersbot_ios]
+formal_name = "CheckersBot"
+description = "Plays checkers on jokergame.cc with a negamax engine."
+long_description = """
+The same 8x8 checkers engine that runs on the desktop, wrapped in a WebView:
+log in on jokergame.cc, open a table, press start - the bot reads the board with
+the site's own JavaScript, asks the negamax engine for a move and clicks it.
+"""
+sources = ["src/checkersbot_ios", "checkersbot"]
+test_sources = ["tests"]
+requires = ["toga>=0.5"]
+
+[tool.briefcase.app.checkersbot_ios.iOS]
+# Python-Apple-support needs 13.0 or newer; an iPhone 17 Pro runs far above it.
+min_os_version = "13.0"

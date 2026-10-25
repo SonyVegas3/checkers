@@ -1,0 +1,15 @@
+# Runtime dependencies for the checkers engine and the web bot.
+#
+#   python -m venv .venv
+#   .venv\Scripts\activate        (Windows)
+#   source .venv/bin/activate     (Linux / macOS)
+#   python -m pip install -r requirements.txt
+#   python -m playwright install chromium     # browser used by web_bot.py
+#
+# The engine itself (board.py / ai.py / game.py) only needs the standard
+# library; Playwright is required by web_bot.py only.
+playwright>=1.40
+
+# Optional tooling (the unit tests use the built-in unittest runner):
+# pytest>=8.0
+# ruff>=0.6

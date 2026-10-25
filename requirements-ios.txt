@@ -1,0 +1,19 @@
+# Building the iOS app (iphone / iPad).
+#
+# The app itself is pure Python + Toga, but an .ipa can only be produced on
+# macOS with Xcode.  Briefcase builds for the simulator; scripts/build_ipa.sh
+# finishes the job and writes dist/CheckersBot-unsigned.ipa.
+#
+#   python -m venv .venv-ios
+#   source .venv-ios/bin/activate
+#   python -m pip install -r requirements-ios.txt
+#   bash scripts/build_ipa.sh
+#
+# Without a Mac, push a tag (ios-*) and let .github/workflows/ios.yml build the
+# IPA on a macOS runner; then sign it with iLoader / Sideloadly on the phone.
+#
+# `briefcase dev` runs the same app on Windows/macOS/Linux for development (it
+# needs Edge WebView2 on Windows and Toga otherwise).
+
+toga>=0.5
+briefcase>=0.4
