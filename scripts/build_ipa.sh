@@ -70,7 +70,8 @@ echo "target: $TARGET"
 
 say "Building for the device ($SDK, $CONFIGURATION, unsigned)"
 rm -rf build-ios
-xcodebuild build \
+BUILD_LOG="$PWD/xcodebuild-ios.log"
+if ! xcodebuild build \
   -project "$PROJECT" \
   -target "$TARGET" \
   -configuration "$CONFIGURATION" \
@@ -79,7 +80,11 @@ xcodebuild build \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGN_IDENTITY="" \
-  -quiet
+  > "$BUILD_LOG" 2>&1; then
+  echo "! the device build failed - last 150 lines of $BUILD_LOG:" >&2
+  tail -n 150 "$BUILD_LOG" >&2 || true
+  exit 1
+fi
 
 APP="$(find build-ios -type d -name '*.app' -path "*${CONFIGURATION}-${SDK}*" | head -n 1)"
 if [ -z "$APP" ]; then

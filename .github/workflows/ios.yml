@@ -39,6 +39,15 @@ jobs:
       - name: Build the unsigned IPA
         run: bash scripts/build_ipa.sh
 
+      - name: Upload the Xcode build log (only when the build fails)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild-ios.log
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: List the artefacts
         run: ls -la dist
 
