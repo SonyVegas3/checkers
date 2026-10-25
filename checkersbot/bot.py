@@ -62,7 +62,7 @@ class CheckersBot:
         email: Optional[str] = None,
         password: Optional[str] = None,
         trace_board: bool = False,
-        rules: str = "brazilian",
+        rules: str = "joker",
         log=None,
         should_stop=None,
         lobby_walk: bool = True,
@@ -71,8 +71,8 @@ class CheckersBot:
             raise ValueError("site_color must be auto, white or black")
         if side not in ("auto", "red", "black"):
             raise ValueError("side must be auto, red or black")
-        if rules not in ("english", "russian", "brazilian"):
-            raise ValueError("rules must be english, russian or brazilian")
+        if rules not in ("english", "russian", "brazilian", "joker"):
+            raise ValueError("rules must be english, russian, brazilian or joker")
 
         self.site = site
         self.requested_site_color = site_color
@@ -149,7 +149,7 @@ class CheckersBot:
         repaints its ``.active`` squares only when the server answers).
         """
         origin_x, origin_y = xy_from_square(origin)
-        longest = 7 if self.rules in ("russian", "brazilian") else 2
+        longest = 7 if self.rules in ("russian", "brazilian", "joker") else 2
         for square in offers:
             x, y = xy_from_square(square)
             delta_x, delta_y = abs(x - origin_x), abs(y - origin_y)

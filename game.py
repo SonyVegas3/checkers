@@ -177,11 +177,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", "-v", action="store_true", help="print every self-play move")
     parser.add_argument(
         "--rules",
-        default="brazilian",
-        choices=("brazilian", "russian", "english"),
-        help="brazilian = flying kings + backwards man captures + longest capture "
-             "(jokergame.cc), russian = flying kings, english = American checkers "
-             "(default: brazilian)",
+        default="joker",
+        choices=("joker", "brazilian", "russian", "english"),
+        help="joker = brazilian rules + a man crowned in the middle of a capture "
+             "keeps capturing as a king (jokergame.cc), brazilian = flying kings + "
+             "backwards man captures + longest capture, russian = flying kings, "
+             "english = American checkers (default: joker)",
     )
     return parser
 

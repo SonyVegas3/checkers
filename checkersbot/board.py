@@ -22,7 +22,7 @@ BLACK starts at the top (rows 0-2) and moves downwards.  RED moves first.
 
 Rules
 -----
-Two rule sets are supported and chosen with ``Board(..., rules=...)``:
+Rule sets are chosen with ``Board(..., rules=...)``:
 
 ``english`` (American checkers, the default)
     * men step one square diagonally forward, kings step one square in any
@@ -30,7 +30,7 @@ Two rule sets are supported and chosen with ``Board(..., rules=...)``:
     * a capture is a jump over an adjacent enemy piece onto the empty square
       directly behind it, several jumps are chained into a single move.
 
-``russian`` (Russian draughts / ``damka``, what jokergame.cc plays)
+``russian`` (Russian draughts / ``damka``)
     * men step and capture forwards only, exactly as above;
     * **kings fly**: they slide any number of empty squares along a diagonal,
       and when they capture they jump an enemy piece from any distance and
@@ -39,11 +39,23 @@ Two rule sets are supported and chosen with ``Board(..., rules=...)``:
     * captured pieces stay on the board until the move ends, so a king may
       not pass over the same piece twice nor land on a square it already took.
 
-Common to both rule sets:
+``brazilian`` (Brazilian draughts / international draughts)
+    * everything from ``russian``;
+    * men also **capture backwards** (they still only move forwards);
+    * the **longest capture** is compulsory.
+
+``joker`` (what jokergame.cc actually plays - Brazilian + Russian promotion)
+    * everything from ``brazilian``;
+    * a man that lands on its far row **during a capture** is crowned on the
+      spot and **keeps capturing as a (flying) king in the same move**, so one
+      move can contain a crown and further jumps behind it.  ``Move.promotes``
+      is set and the piece finishes the move as a king.
+
+Common to all rule sets:
 
 * capturing is mandatory: as soon as a capture exists it must be played
   (the player may pick any of the available capture sequences);
-* a man that reaches the far row is crowned, which ends the move;
+* a man that reaches the far row outside a capture is crowned and the move ends;
 * a side that cannot move loses.
 
 The module is written for speed: move generation uses pre-computed
@@ -135,7 +147,7 @@ def is_man(piece: int) -> bool:
     return piece == RED_MAN or piece == BLACK_MAN
 
 
-RULES = ("english", "russian", "brazilian")
+RULES = ("english", "russian", "brazilian", "joker")
 DIAGONALS: Tuple[Tuple[int, int], ...] = ((-1, -1), (-1, 1), (1, -1), (1, 1))
 
 
@@ -321,17 +333,27 @@ class Board:
     @property
     def flying_kings(self) -> bool:
         """True when kings slide and capture at a distance (Russian/Brazilian)."""
-        return self.rules in ("russian", "brazilian")
+        return self.rules in ("russian", "brazilian", "joker")
 
     @property
     def men_capture_backwards(self) -> bool:
         """True when men may capture in all four directions (Brazilian rules)."""
-        return self.rules == "brazilian"
+        return self.rules in ("brazilian", "joker")
 
     @property
     def maximum_capture(self) -> bool:
         """True when the longest capture sequence is compulsory (Brazilian rules)."""
-        return self.rules == "brazilian"
+        return self.rules in ("brazilian", "joker")
+
+    @property
+    def promotion_continues(self) -> bool:
+        """True when a man crowned *during* a capture keeps capturing (joker).
+
+        jokergame.cc crowns the man on the promotion row in the middle of the
+        jump sequence and lets it carry on as a flying king, so one move can be
+        "man jumps, is crowned, the new king jumps again".
+        """
+        return self.rules == "joker"
 
     # ------------------------------------------------------------------
     # construction helpers
@@ -487,8 +509,13 @@ class Board:
         origin: int,
         results: List[Move],
         path: Optional[List[int]] = None,
+        promoted: bool = False,
     ) -> None:
-        """Depth-first enumeration of all maximal jump sequences for one piece."""
+        """Depth-first enumeration of all maximal jump sequences for one piece.
+
+        ``promoted`` records that the piece was already crowned earlier in this
+        move (joker rules), so the final :class:`Move` still finishes as a king.
+        """
         cells = self.cells
         path = [] if path is None else path
         if piece == RED_MAN:
@@ -501,7 +528,7 @@ class Board:
             jumps, crown_row, king, enemy_is_red = KING_JUMPS[square], -1, True, True
 
         if king and self.flying_kings:
-            self._collect_king_captures(square, captured, origin, results, path)
+            self._collect_king_captures(square, captured, origin, results, path, promoted)
             return
 
         if not king and self.men_capture_backwards:
@@ -523,14 +550,22 @@ class Board:
             captured.append(over)
             path.append(land)
             if not king and row_of(land) == crown_row:
-                results.append(Move(origin, land, captured, True, path))
+                if self.promotion_continues:
+                    # crowned in the middle of the jump: the rest of the chain is
+                    # played by the new king (jokergame.cc), and the move ends as
+                    # a king, so remembered by ``promoted=True``
+                    self._collect_captures(
+                        land, promote_piece(piece), captured, origin, results, path, True
+                    )
+                else:
+                    results.append(Move(origin, land, captured, True, path))
             else:
-                self._collect_captures(land, piece, captured, origin, results, path)
+                self._collect_captures(land, piece, captured, origin, results, path, promoted)
             path.pop()
             captured.pop()
 
         if not extended and captured:
-            results.append(Move(origin, square, captured, False, path))
+            results.append(Move(origin, square, captured, promoted, path))
 
     def _collect_king_captures(
         self,
@@ -539,35 +574,41 @@ class Board:
         origin: int,
         results: List[Move],
         path: List[int],
+        promoted: bool = False,
     ) -> None:
         """Flying-king captures: take from any distance and land anywhere behind.
 
         Captured pieces stay on the board until the move ends, so the king may
         neither jump the same piece twice nor pass over a piece it already took.
+        ``promoted`` marks a king that was crowned earlier in this same move.
         """
         cells = self.cells
         enemy_is_red = cells[origin] < 0
         extended = False
         for ray in RAYS[square]:
             for position, victim_square in enumerate(ray):
-                victim = cells[victim_square]
+                # our own starting square is empty during the move, exactly like
+                # in the man generator - a king may pass over it and land on it
+                victim = 0 if victim_square == origin else cells[victim_square]
                 if victim == 0:
                     continue
                 if (victim > 0) != enemy_is_red or victim_square in captured:
                     break                      # our own piece or an already taken one
                 for land in ray[position + 1:]:
-                    if cells[land] != 0:
+                    if cells[land] != 0 and land != origin:
                         break                  # a captured piece still blocks the ray
                     extended = True
                     captured.append(victim_square)
                     path.append(land)
-                    self._collect_king_captures(land, captured, origin, results, path)
+                    self._collect_king_captures(
+                        land, captured, origin, results, path, promoted
+                    )
                     path.pop()
                     captured.pop()
                 break
 
         if not extended and captured:
-            results.append(Move(origin, square, captured, False, path))
+            results.append(Move(origin, square, captured, promoted, path))
 
     # ------------------------------------------------------------------
     # applying moves

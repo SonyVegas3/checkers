@@ -22,11 +22,11 @@ class SettingsTests(unittest.TestCase):
         settings = Settings()
         argv = settings.to_argv()
         self.assertIn("--rules", argv)
-        self.assertEqual(argv[argv.index("--rules") + 1], "brazilian")
+        self.assertEqual(argv[argv.index("--rules") + 1], "joker")
         self.assertEqual(argv[argv.index("--coins") + 1], "0")
         # the parser must accept whatever the panel builds
         args = parse_settings_argv(settings)
-        self.assertEqual(args.rules, "brazilian")
+        self.assertEqual(args.rules, "joker")
         self.assertEqual(args.coins, 0)
         self.assertTrue(args.lobby_walk)
 

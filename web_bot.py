@@ -882,11 +882,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="log the board the bot parsed before every move")
     parser.add_argument("--diagnose", action="store_true",
                         help="compare the site's legal moves with our rules and exit")
-    parser.add_argument("--rules", default="brazilian",
-                        choices=("brazilian", "russian", "english"),
-                        help="board rules: brazilian (flying kings + men capture "
-                             "backwards + longest capture, what jokergame.cc plays), "
-                             "russian (flying kings) or english (default: brazilian)")
+    parser.add_argument("--rules", default="joker",
+                        choices=("joker", "brazilian", "russian", "english"),
+                        help="board rules: joker (brazilian + a man crowned in the "
+                             "middle of a capture keeps capturing as a king - what "
+                             "jokergame.cc plays), brazilian (flying kings + men "
+                             "capture backwards + longest capture), russian (flying "
+                             "kings) or english (default: joker)")
     parser.add_argument("--no-lobby", dest="lobby_walk", action="store_false",
                         help="never walk the lobby: only play on a board that is already "
                              "open in the browser (useful to continue a game)")

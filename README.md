@@ -1,4 +1,4 @@
-# Checkers AI Engine (8x8: Brazilian, Russian and English draughts rules)
+# Checkers AI Engine (8x8: jokergame, Brazilian, Russian and English draughts rules)
 
 A Python checkers engine built as the brain of an automated bot for the web game
 on jokergame.cc. It is a negamax searcher with alpha-beta pruning, a
@@ -10,7 +10,7 @@ browser and an iOS app that plays it inside a WKWebView.
 .
 ├── checkersbot/             # the shared core (no browser library in here)
 │   ├── board.py             # rules: 8x8 board, pieces, move generation (english/russian/
-│   │                        #   brazilian), forced jumps, kinging, flying kings
+│   │                        #   brazilian/joker), forced jumps, kinging, flying kings
 │   ├── ai.py                # Minimax + alpha-beta search, evaluation, dynamic depth
 │   ├── site.py              # jokergame.cc protocol: SELECTORS, the two JS scripts,
 │   │                        #   SiteState, site_legal_moves + the Site interface
@@ -75,7 +75,7 @@ shows the live log. No Python installation is needed for that.
 ```powershell
 python game.py                  # you are RED (bottom rows), engine is BLACK
 python game.py --ai-red         # engine plays RED and moves first
-python game.py --depth 9 --time 5                       # brazilian rules (default)
+python game.py --depth 9 --time 5                       # joker rules = what the site plays (default)
 python game.py --depth 9 --time 5 --rules english       # American checkers instead
 python game.py --selfplay 2 --depth 5 --time 1 --verbose   # automated smoke test
 ```
@@ -107,7 +107,7 @@ What the panel offers:
 | **1. საიდან დაიწყოს თამაში** | `ავტორიზაცია → ლობი` (signs in with the e-mail/password, then walks the lobby), `ლობი` (the browser profile is already signed in) or `უკვე ღია დაფა` (no lobby at all — the bot only plays the table that is already open, `--no-lobby`) |
 | **2. ავტორიზაცია** | e-mail/phone + password; the password stays in memory and is **never** written to disk |
 | **3. მაგიდა და თანხა** | stake ladder exactly as the site renders it (`0` = 50, `1` = 5 000, `2` = 50 000, `3` = 200 000, `4` = 1 000 000, `5` = 10 000 000 coins), browser profile folder, browser (Playwright Chromium / installed Chrome / Edge) and log folder |
-| **4. ძრავა** | depth, seconds per move, poll interval, max moves, rules (`brazilian`/`russian`/`english`), plus headless / close-browser / board-trace / dry-run / probe toggles |
+| **4. ძრავა** | depth, seconds per move, poll interval, max moves, rules (`joker`/`brazilian`/`russian`/`english`), plus headless / close-browser / board-trace / dry-run / probe toggles |
 | **buttons** | `▶ დაწყება`, `■ შეჩერება` (cooperative, stops after the current move), `✔ წესების შემოწმება` (`--diagnose`), open log/profile folders, save settings |
 | **5. ლოგი** | live output of the bot (same lines as the CLI), mirrored to a file with `--log-file` |
 
@@ -367,7 +367,7 @@ python web_bot.py --headless --max-moves 20 --poll 0.5
 | `--max-moves` | `0` (∞) | stop after N moves |
 | `--max-errors` | `5` | stop after N consecutive failures (screenshots are saved to `logs/`) |
 | `--no-probe` | off | trust the engine without asking the site (debug only) |
-| `--rules` | `brazilian` | `brazilian` (flying kings + backwards man captures + longest capture — what jokergame.cc plays), `russian` or `english` |
+| `--rules` | `joker` | `joker` (Brazilian rules **plus** a man crowned in the middle of a capture keeps capturing as a king — what jokergame.cc plays), `brazilian` (strict international: the move ends on the crown row), `russian` or `english` |
 | `--trace-board` | off | log the parsed board before every move |
 | `--diagnose` | off | compare the site's legal moves with our rules stone by stone and exit |
 | `--no-lobby` | off | never walk the lobby: only play a board that is already open |
@@ -471,10 +471,24 @@ whatever the web client sends.
 
 ## Rules implemented
 
-Three rule sets share one generator, chosen with `Board(..., rules=...)`, the
+Four rule sets share one generator, chosen with `Board(..., rules=...)`, the
 `game.py --rules` flag and the `web_bot.py --rules` flag.
 
-### `brazilian` — 8x8 international draughts (default: what jokergame.cc plays)
+### `joker` — what jokergame.cc plays (default)
+
+Everything from `brazilian` below, **plus Russian promotion**: when a man lands
+on its far row *in the middle of a capture*, it is crowned on the spot and
+**keeps capturing as a (flying) king in the same move**.  A single move can
+therefore be "man jumps, is crowned, the new king jumps again", and the piece
+finishes the move as a king (`Move.promotes` is set, the search and
+`make_move()` both handle it).
+
+This was found in live play: the site offers the continuation, so a bot that
+stops at the crown row plays a move the server does not consider finished and
+then has to resynchronise.  `joker` is the default for the web bot, the GUI, the
+CLI and the iOS app; `brazilian` keeps the strict international behaviour.
+
+### `brazilian` — 8x8 international draughts
 
 * **kings fly**: a king slides any number of empty squares along a diagonal and
   may capture an enemy piece **from any distance**, landing on **any** free
@@ -486,7 +500,7 @@ Three rule sets share one generator, chosen with `Board(..., rules=...)`, the
 * captured pieces stay on the board until the move ends, so a piece cannot jump
   the same piece twice nor pass over a piece it already took;
 * a chain must be played to the end; a man that lands on the far row is crowned
-  and the move ends immediately.
+  and the move ends immediately (no further jumps as a king).
 
 ### `russian` — Russian draughts / *damka*
 
@@ -516,7 +530,11 @@ Not by guessing — by replaying live games:
    positions above encode;
 4. live probes of our kings now match the site square for square, e.g.
    `probe e5 (king): site b8, c7, g7, d6, f6, d4, f4, c3, g3, b2, a1 | engine …`
-   (identical lists).
+   (identical lists);
+5. one more difference showed up in live play: a man that captures onto the
+   promotion row must **keep capturing as a king** — the site offers the
+   continuation, strict international rules do not.  That is the `joker` rule
+   set, and it is what the bot plays by default now.
 
 `web_bot.py --diagnose` prints that same stone-by-stone comparison for any live
 position, so the rules can be re-verified at any time.
@@ -590,13 +608,15 @@ Strength checks (all with a 0.2 s budget per move):
 python -m unittest discover -s tests -t . -v
 ```
 
-74 tests. `tests/test_engine.py` (36) covers the starting position,
+81 tests. `tests/test_engine.py` (43) covers the starting position,
 perft, mandatory captures, chained jumps, king jumps in every direction,
 promotion (including "the move ends when a man is crowned"), make/unmake
 round-trips, winner detection, move parsing, evaluation symmetry, the Russian
 flying-king rules (slides, long captures, landing anywhere behind, no double
 capture, men still capture forwards only), the Brazilian rules (backwards man
-captures exactly as the site played them, compulsory longest capture) and the
+captures exactly as the site played them, compulsory longest capture), the
+`joker` rules (a crowned man keeps capturing as a king, the same move ends as a
+king, make/unmake of such a chain, the engine picks it) and the
 search (legality, safe-jump choice, forced wins, time limit, repetition
 avoidance, dynamic depth).
 `tests/test_web_bot.py` (11) covers the coordinate mapping, jump-path and
@@ -627,9 +647,11 @@ jump and a full `bot.run(max_moves=1)`. Skipped automatically without Chromium.
   engine has no endgame tablebase, only search plus the heuristic evaluation.
 * Draws are declared by the caller (`game.py` uses the 40 move rule); the
   search itself treats the game as a win/loss tree.
-* The default rule set is `--rules brazilian`: flying kings, men capture
-  backwards and the longest capture is compulsory — that is what jokergame.cc
-  plays, verified by replaying live games (see "Rules implemented").
+* The default rule set is `--rules joker`: flying kings, men capture backwards,
+  the longest capture is compulsory **and** a man crowned in the middle of a
+  capture keeps capturing as a king — that is what jokergame.cc plays, verified
+  by replaying live games (see "Rules implemented"). `--rules brazilian` is the
+  strict international variant (the move ends on the crown row),
   `--rules russian` (men capture forwards only, any capture) and
   `--rules english` (American checkers) are kept as well.
 * `web_bot.py` automates a real browser session on a real account. Use it only

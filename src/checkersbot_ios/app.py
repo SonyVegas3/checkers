@@ -192,7 +192,7 @@ class CheckersBotApp(toga.App):
             # the user opens the table; the app never walks the lobby or logs in
             lobby_walk=False,
             use_probe=True,
-            rules="brazilian",
+            rules="joker",
             log=self.log_line,
             should_stop=self._stop.is_set,
             log_dir=str(self.paths.logs),

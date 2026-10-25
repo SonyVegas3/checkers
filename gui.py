@@ -60,6 +60,7 @@ MODES: Dict[str, str] = {
 }
 
 RULES: Dict[str, str] = {
+    "joker": "joker — როგორც jokergame.cc (დამკად ქცევა ჭამის შუაში + გაგრძელება)",
     "brazilian": "brazilian — დამკა (მფრინავი მეფე + უკანა კაპტურა)",
     "russian": "russian — მფრინავი მეფე, ჯარისკაცი მხოლოდ წინ",
     "english": "english — ამერიკული (მეფე ერთ უჯრაზე)",
@@ -101,7 +102,7 @@ class Settings:
     poll: float = 1.0
     turn_timeout: float = 120.0
     max_moves: int = 0
-    rules: str = "brazilian"
+    rules: str = "joker"
     channel: str = ""
     window_size: str = ""
     headless: bool = False
@@ -425,7 +426,7 @@ class BotWindow:
         self.time_var.set(str(s.time))
         self.poll_var.set(str(s.poll))
         self.maxmoves_var.set(str(s.max_moves))
-        self.rules_var.set(RULES.get(s.rules, RULES["brazilian"]))
+        self.rules_var.set(RULES.get(s.rules, RULES["joker"]))
         self.headless_var.set(bool(s.headless))
         self.closebrowser_var.set(bool(s.close_browser))
         self.trace_var.set(bool(s.trace_board))
@@ -451,7 +452,7 @@ class BotWindow:
         s.max_moves = max(0, self._as_int(self.maxmoves_var.get(), 0))
         rules_label = self.rules_var.get()
         s.rules = next((key for key, text in RULES.items() if text == rules_label),
-                       "brazilian")
+                       "joker")
         s.headless = bool(self.headless_var.get())
         s.close_browser = bool(self.closebrowser_var.get())
         s.trace_board = bool(self.trace_var.get())

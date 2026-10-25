@@ -21,6 +21,7 @@ from board import (
     RED,
     RED_KING,
     RED_MAN,
+    RULES,
     Board,
     parse_square,
     square_name,
@@ -427,6 +428,98 @@ class BrazilianRulesTests(unittest.TestCase):
         targets = sorted(square_name(m.to_square) for m in board.quiet_moves(RED))
         self.assertEqual(len(targets), 13)
         self.assertIn("h8", targets)
+
+
+class JokerRulesTests(unittest.TestCase):
+    """jokergame.cc: Brazilian rules, plus Russian promotion inside a capture.
+
+    The site crowns a man on the promotion row *during* the jump sequence and
+    lets it carry on as a (flying) king, so one move can be "jump, crown, jump
+    again".  These positions are the smallest ones that show the difference.
+    """
+
+    ROWS = [
+        "........",
+        "..b.b...",      # c7 and e7
+        ".....r..",      # f6: jumps e7, lands d8 (crown row), then takes c7
+        "........",
+        "........",
+        "........",
+        "........",
+        "........",
+    ]
+
+    def test_the_crowned_man_keeps_capturing(self):
+        board = Board.from_rows(self.ROWS, turn=RED, rules="joker")
+        moves = board.generate_moves()
+        self.assertTrue(moves)
+        self.assertEqual(sorted(m.notation() for m in moves), ["f6xa5", "f6xb6"])
+        for move in moves:
+            self.assertEqual(move.captured_count, 2)
+            self.assertTrue(move.promotes)
+            self.assertEqual([square_name(s) for s in move.landing_path][0], "d8")
+        self.assertEqual([square_name(s) for s in moves[0].captured], ["e7", "c7"])
+
+    def test_brazilian_rules_stop_at_the_crown_row(self):
+        # the same board under the plain Brazilian rules: the move ends on d8
+        board = Board.from_rows(self.ROWS, turn=RED, rules="brazilian")
+        moves = board.generate_moves()
+        self.assertEqual([m.notation() for m in moves], ["f6xd8"])
+        self.assertEqual(moves[0].captured_count, 1)
+        self.assertTrue(moves[0].promotes)
+
+    def test_the_move_ends_as_a_king(self):
+        board = Board.from_rows(self.ROWS, turn=RED, rules="joker")
+        move = next(m for m in board.generate_moves()
+                    if square_name(m.to_square) == "b6")
+        board.apply_move(move)
+        self.assertEqual(board.piece_at(parse_square("b6")), RED_KING)
+        self.assertEqual(board.piece_count(BLACK), 0)
+        self.assertEqual(board.turn, BLACK)
+
+    def test_promotion_without_further_captures_still_promotes(self):
+        board = Board.from_rows([
+            "........",
+            "....b...",      # e7
+            ".....r..",      # f6 -> d8
+            "........",
+            "........",
+            "........",
+            "........",
+            "........",
+        ], turn=RED, rules="joker")
+        moves = board.generate_moves()
+        self.assertEqual([m.notation() for m in moves], ["f6xd8"])
+        self.assertTrue(moves[0].promotes)
+        board.apply_move(moves[0])
+        self.assertEqual(board.piece_at(parse_square("d8")), RED_KING)
+
+    def test_make_unmake_roundtrip_with_a_promotion_chain(self):
+        board = Board.from_rows(self.ROWS, turn=RED, rules="joker")
+        snapshot = board.copy()
+        move = next(m for m in board.generate_moves()
+                    if square_name(m.to_square) == "b6")
+        undo = board.make_move(move)
+        board.unmake_move(move, undo)
+        self.assertEqual(board, snapshot)
+
+    def test_the_engine_plays_a_promotion_chain(self):
+        board = Board.from_rows(self.ROWS, turn=RED, rules="joker")
+        ai = CheckersAI(color=RED, max_depth=4, time_limit=0.5)
+        move = ai.choose_move(board)
+        self.assertIsNotNone(move)
+        self.assertIn(move, board.generate_moves())
+        self.assertTrue(move.promotes)
+
+    def test_the_site_ruleset_is_the_default(self):
+        # the bot, the GUI, the CLI and the iOS app all play "joker"
+        self.assertIn("joker", RULES)
+        self.assertTrue(Board(rules="joker").promotion_continues)
+        self.assertTrue(Board(rules="joker").flying_kings)
+        self.assertTrue(Board(rules="joker").men_capture_backwards)
+        self.assertTrue(Board(rules="joker").maximum_capture)
+        self.assertFalse(Board(rules="brazilian").promotion_continues)
+
 
 
 class EvaluationTests(unittest.TestCase):
