@@ -35,7 +35,8 @@ browser and an iOS app that plays it inside a WKWebView.
 │   └── mock_checkers.html   # local copy of the site's DOM/click protocol
 ├── scripts/
 │   ├── build_ipa.sh         # macOS: device build + Payload/ -> dist/*.ipa
-│   └── push_to_github.ps1   # Windows: one command to push and get the CI build
+│   ├── push_to_github.ps1   # Windows: one command to push and get the CI build
+│   └── push_to_github.cmd   # the same, for cmd.exe / double-click
 ├── .github/workflows/ios.yml  # builds the unsigned .ipa on a macOS runner
 ├── board.py / ai.py         # thin aliases of checkersbot.board / checkersbot.ai
 └── .gitignore
@@ -195,7 +196,7 @@ bash scripts/build_ipa.sh             # -> dist/CheckersBot-unsigned.ipa
 
 ```text
 # 2) no Mac: push the repo and let GitHub build it
-scripts\push_to_github.ps1 -RepoUrl https://github.com/<you>/<repo>.git
+scripts\push_to_github.cmd https://github.com/<you>/<repo>.git
 #    -> Actions -> "iOS app" -> Run workflow -> artifact CheckersBot-unsigned-ipa
 ```
 
