@@ -75,6 +75,12 @@ echo "target: $TARGET"
 say "Building for the device ($SDK, $CONFIGURATION, unsigned)"
 rm -rf build-ios
 BUILD_LOG="$PWD/xcodebuild-ios.log"
+# CODE_SIGNING_ALLOWED=NO keeps the app itself unsigned, but the support
+# package's "Process Python libraries" phase still runs
+#   codesign --sign "$EXPANDED_CODE_SIGN_IDENTITY"
+# on every module it turns into a framework.  With an empty identity that dies
+# with "no identity found", so we hand it the ad-hoc identity "-": no
+# certificate is involved, and iLoader re-signs everything when installing.
 if ! xcodebuild build \
   -project "$PROJECT" \
   -target "$TARGET" \
@@ -84,6 +90,7 @@ if ! xcodebuild build \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGN_IDENTITY="" \
+  EXPANDED_CODE_SIGN_IDENTITY="-" \
   > "$BUILD_LOG" 2>&1; then
   echo "! the device build failed - last 150 lines of $BUILD_LOG:" >&2
   tail -n 150 "$BUILD_LOG" >&2 || true
