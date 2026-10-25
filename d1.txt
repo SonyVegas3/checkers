@@ -1,0 +1,56 @@
+﻿			obj.self.opponent_draw = false;
+
+			$('.draw-button').remove();
+
+			// create table
+			$('.game-table').html('');
+			
+			obj.self.table({
+				'type': data.game.player.type
+			});
+		}
+		
+		/* all time actions */
+
+		// set can action
+		obj.self.canAction = data.game.player.action;
+
+		// system message
+		if(
+			data.game.info.step > 0
+				||
+			data.game.player.action == 'no'
+		) {
+			if(data.game.info.message) {
+				if(data.game.info.message != obj.self.message) {
+					toast(hashFilter(data.game.info.message), {
+						'timeout': 3000,
+						'position': 'center',
+						'zIndex': '+1',
+						'container': $('.game-toasts')
+					});
+
+					obj.self.message = data.game.info.message;
+				}
+			}
+		}
+
+		// hide waiting opponent
+		$('.waiting-opponent').remove();
+
+		// update total score info
+		$('.user-info[user-type="player"] div[user-content="score"]').text(data.game.player.total_score);
+		$('.user-info[user-type="opponent"] div[user-content="score"]').text(data.game.opponent.total_score);
+
+		// reset reminder
+		if(data.game.player.action == 'no') {
+			obj.self.reminderStep = null;
+		}
+
+		// update game info
+		clearTimeout(obj.self.reminder);
+		
+		// user progress
+		if(
+			data.game.info.step_percent >= 0
+				&&

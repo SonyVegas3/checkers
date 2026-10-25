@@ -649,7 +649,7 @@ class BotWindow:
             messagebox.showinfo(APP_NAME, "ჯერ დააჭირე „დაწყებას“.")
             return
         self.lose_var.set(True)
-        self.log_line("😞 მარცხი ჩართულია - ბოტი სუსტ სვლებს ითამაშებს")
+        self.log_line("😞 მარცხი ჩართულია - ბოტი საშუალო დონეზე ითამაშებს")
 
     def save_settings(self, quiet: bool = False) -> None:
         try:

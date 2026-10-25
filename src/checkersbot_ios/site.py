@@ -30,6 +30,7 @@ from typing import Any, Callable, Dict, Optional
 
 from checkersbot.site import (
     ACCEPT_COIN_OFFER_JS,
+    ACCEPT_DRAW_JS,
     CANCEL_SEARCH_JS,
     DECLINE_CHAT_JS,
     FIT_VIEW_JS,
@@ -238,6 +239,10 @@ class WebViewSite:
     def accept_coin_offer(self) -> str:
         """Press the site's own accept button in the bigger-stake dialog."""
         return str(self._eval(f"JSON.stringify({ACCEPT_COIN_OFFER_JS})") or "none")
+
+    def accept_draw_offer(self) -> str:
+        """Agree to the opponent's draw offer (unanswered it loses on time)."""
+        return str(self._eval(f"JSON.stringify({ACCEPT_DRAW_JS})") or "none")
 
     def decline_chat_offer(self) -> str:
         """Close the chat invitation (the site itself only hides the dialog)."""

@@ -78,6 +78,7 @@ from checkersbot.board import RED, square_name
 from checkersbot.bot import CheckersBot
 from checkersbot.site import (  # noqa: F401 - re-exported for the tests / CLI
     ACCEPT_COIN_OFFER_JS,
+    ACCEPT_DRAW_JS,
     CANCEL_SEARCH_JS,
     DECLINE_CHAT_JS,
     FIT_VIEW_JS,
@@ -443,6 +444,14 @@ class JokerGameSite:
             return str(self.page.evaluate(ACCEPT_COIN_OFFER_JS) or "none")
         except PlaywrightError as error:
             self.log(f"  (stake offer: {error})")
+            return "none"
+
+    def accept_draw_offer(self) -> str:
+        """Agree to the opponent's draw offer (unanswered it loses on time)."""
+        try:
+            return str(self.page.evaluate(ACCEPT_DRAW_JS) or "none")
+        except PlaywrightError as error:
+            self.log(f"  (draw offer: {error})")
             return "none"
 
     def decline_chat_offer(self) -> str:
@@ -931,8 +940,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "game is quick, every later move waits one of these at "
                              "random (default: 2,3,5,7; 0 = no delay)")
     parser.add_argument("--lose", action="store_true",
-                        help="play weak moves on purpose (lose the game slowly, "
-                             "like a human mistake)")
+                        help="lose on purpose, but only with average-player moves: "
+                             "nothing is handed over for free")
     parser.add_argument("--max-errors", type=int, default=5, help="stop after N consecutive failures")
     parser.add_argument("--once", action="store_true", help="play a single move, then exit")
     parser.add_argument("--dry-run", action="store_true",

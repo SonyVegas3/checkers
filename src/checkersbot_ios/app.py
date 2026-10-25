@@ -257,12 +257,12 @@ class CheckersBotApp(toga.App):
         self.status.text = "დასრულდა" if code == 0 else f"შეჩერდა ({code})"
 
     def on_lose(self, widget, **kwargs) -> None:
-        """Ask the bot to lose this game - with a believable weak move."""
+        """Ask the bot to lose this game - with average-player moves."""
         if not (self._bot_thread is not None and self._bot_thread.is_alive()):
             self.log_line("ჯერ დააჭირე „დაწყებას“")
             return
         self._lose_flag = True
-        self.log_line("😞 მარცხი ჩართულია - ბოტი სუსტ სვლებს ითამაშებს")
+        self.log_line("😞 მარცხი ჩართულია - ბოტი საშუალო დონეზე ითამაშებს")
 
     async def on_reload(self, widget, **kwargs) -> None:
         try:

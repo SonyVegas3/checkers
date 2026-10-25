@@ -1,0 +1,31 @@
+﻿function confirmDialog(args) {
+	// confirm dialog
+	var confirm_dialog = new dialog({
+		'title': args.title,
+		'cancelable': args.cancelable,
+		'style': args.style,
+		'class': (args.class ? args.class+' ':'')+'v2-dark v2-confirm',
+		'zIndex': args.zIndex,
+		'buttons': args.buttons,
+		'hide_callback': function() {
+			if(args.hide_callback) {
+				args.hide_callback();
+			}
+		}
+	}).show();
+
+	if(args.text) {
+		confirm_dialog.content(
+			'<div style="margin-top: 16px; margin-bottom: 16px; padding-left: 16px; padding-right: 16px;">'+
+				'<div style="font-size: 16px; text-align: center;">'+
+					args.text+
+				'</div>'+
+			'</div>'
+		, {
+			'action': 'update'
+		});
+	}
+
+	if(args.hide) {
+		setTimeout(function() {
+			$(confirm_dialog.elem).slideUp(300, function() {

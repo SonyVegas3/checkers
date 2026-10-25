@@ -63,17 +63,25 @@ REMATCH_JS = r"""
     init_play.rematch({ 'opponent_id': opponent });
     return 'requested:' + opponent;
   }
-  // last resort: click the site's own "Rematch" button by its translated label
-  var label = 'Rematch';
+  // last resort: click the site's own "Rematch" button - the finish dialog's
+  // footer, or the "the opponent wants a rematch" banner it injects next to it
+  var labels = ['Rematch', '\u10e0\u10d4\u10db\u10d0\u10e2\u10e9\u10d8'];
   if (typeof lang === 'object' && lang && typeof lang.text === 'function') {
-    try { label = String(lang.text(124)); } catch (error) { label = 'Rematch'; }
+    try {
+      var translated = String(lang.text(124) || '').trim();
+      if (translated) labels.push(translated);
+    } catch (error) { /* ignore */ }
   }
   var buttons = document.querySelectorAll(
-      '.game-finish-dialog .big-dialog-footer .big-dialog-button');
+      '.game-finish-dialog .big-dialog-button, .rm-offer .big-dialog-button,' +
+      ' .rm-offer button, .rm-offer .app-button');
   for (var index = 0; index < buttons.length; index += 1) {
-    if ((buttons[index].textContent || '').trim() === label.trim()) {
-      buttons[index].click();
-      return 'clicked';
+    var text = (buttons[index].textContent || '').trim();
+    for (var l = 0; l < labels.length; l += 1) {
+      if (text && labels[l] && text.indexOf(labels[l]) >= 0) {
+        buttons[index].click();
+        return 'clicked';
+      }
     }
   }
   return 'none';
@@ -176,6 +184,56 @@ DECLINE_CHAT_JS = (
     if (light) { light.click(); return 'light'; }
     dialog.style.display = 'none';
     return 'hidden';
+  }
+  return 'none';
+})()
+"""
+)
+
+#: Accept the opponent's draw offer (``game_data.opponent.draw``).
+#:
+#: The client shows that offer in a ``confirmDialog`` with the hardcoded text
+#: "მოწინააღმდეგე გთავაზობთ ფრეს" and two buttons, "თანხმობა" (accept) / "უარი"
+#: (decline).  Nothing on the board can be played while it is up and the site
+#: keeps the clock running, so an unanswered offer is a loss on time - the bot
+#: therefore always agrees.  The bot only calls this while the server flag is
+#: set, so the button labelled "Accept" of any visible dialog is taken, and the
+#: dialog text is only used as a second hint.
+ACCEPT_DRAW_JS = (
+    r"""
+(function () {"""
+    + _DIALOG_HELPERS
+    + r"""
+  var accept = label(282, 'Accept');
+  var markers = ['\u10e4\u10e0\u10d4', 'draw', 'Draw', 'DRAW',
+                 '\u043d\u0438\u0447\u044c\u044f', 'remis', 'unentschieden'];
+  var dialogs = document.querySelectorAll(
+      '.big-dialog, .v2-confirm, .confirm-dialog, .v2-game-dialog');
+  var target = null;
+  for (var index = dialogs.length - 1; index >= 0; index -= 1) {
+    var dialog = dialogs[index];
+    if (!visible(dialog)) continue;
+    var buttons = dialog.querySelectorAll('.big-dialog-button, .app-button, button');
+    for (var b = 0; b < buttons.length; b += 1) {
+      var text = (buttons[b].textContent || '').trim();
+      if (text === accept || text === '\u10d7\u10d0\u10dc\u10ee\u10db\u10dd\u10d1\u10d0') {
+        buttons[b].click();
+        return 'clicked';
+      }
+    }
+    if (!target) target = dialog;      // newest dialog wins, see the loop above
+  }
+  if (target) {
+    var body = target.textContent || '';
+    var mentions_draw = false;
+    for (var m = 0; m < markers.length; m += 1) {
+      if (body.indexOf(markers[m]) >= 0) { mentions_draw = true; break; }
+    }
+    var fallback = target.querySelectorAll('.big-dialog-button, .app-button, button');
+    if (mentions_draw && fallback.length) {
+      fallback[0].click();            // "Accept" is the first button
+      return 'fallback';
+    }
   }
   return 'none';
 })()
@@ -358,6 +416,12 @@ READ_STATE_JS = r"""
     playerChat: data && data.player ? data.player.chat : null,
     opponentChat: data && data.opponent ? data.opponent.chat : null,
     opponentCoins: data && data.opponent ? (parseInt(data.opponent.coins, 10) || 0) : 0,
+    // the opponent asked for a draw: the client pops up "opponent offers a draw"
+    // and the game clock keeps running until it is answered
+    opponentDraw: data && data.opponent
+      ? (data.opponent.draw === true || String(data.opponent.draw) === 'yes'
+         || String(data.opponent.draw) === '1')
+      : false,
   };
 
   let stones = domStones;
@@ -397,7 +461,7 @@ READ_STATE_JS = r"""
     server: server,
     finish_dialog: finishDialog,
     dialog: !!document.querySelector('.big-dialog'),
-    waiting: !!document.querySelector('.waiting-opponent'),
+    waiting: !!document.querySelector('.waiting-opponent, .v2-wait-dialog'),
     my_turn: server.playerAction !== null
       ? server.playerAction === 'yes'
       : stones.some((s) => s.clickable),
@@ -478,6 +542,7 @@ class SiteState:
         "step_timeout",
         "coin_offer",
         "chat_offer",
+        "draw_offer",
         "by_absolute",
         "absolute_by_square",
         "stone_by_square",
@@ -513,6 +578,9 @@ class SiteState:
             str(server.get("opponentChat") or "") == "yes"
             and str(server.get("playerChat") or "") != "yes"
         )
+        # the opponent offers a draw: the site's dialog blocks the board and the
+        # clock keeps running, so it has to be answered (the bot always agrees)
+        self.draw_offer = bool(server.get("opponentDraw"))
 
         self.by_absolute: Dict[int, Dict[str, object]] = {}
         self.absolute_by_square: Dict[int, int] = {}
@@ -649,6 +717,9 @@ class Site(Protocol):
 
     def accept_coin_offer(self) -> str:
         """Accept the opponent's bigger stake (the dialog blocks the game)."""
+
+    def accept_draw_offer(self) -> str:
+        """Agree to the opponent's draw offer (unanswered it loses on time)."""
 
     def decline_chat_offer(self) -> str:
         """Turn down an invitation to chat so the game is not blocked."""

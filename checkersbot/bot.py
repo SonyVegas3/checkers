@@ -121,6 +121,9 @@ class CheckersBot:
         self._chat_offer_since: Optional[float] = None
         self._coin_offer_answered = 0
         self._coin_offer_dumped = False
+        self._draw_offer_answered = False
+        self._draw_offer_dumped = False
+        self._draw_offer_tries = 0
         # the GUI pipes every line into a text widget and can ask the loop to stop
         self._log = log
         self.should_stop = should_stop
@@ -156,28 +159,36 @@ class CheckersBot:
         """Has the user asked the bot to lose this game on purpose?"""
         return bool(self.should_lose is not None and self.should_lose())
 
+    #: how far (in evaluation units - a man is 100) a "losing on purpose" move may
+    #: fall behind the best one.  About three quarters of a man is what an average
+    #: club player misses; a whole man (or more) would be a visible blunder, and
+    #: handing pieces over for free is exactly what makes the bot look suspicious.
+    MEDIUM_WINDOW = 80
+
     def _choose_weak_move(
         self, board: Board, allowed: Optional[Sequence[Move]] = None
     ) -> Optional[Move]:
-        """A plausible human slip: a weak move, but not an obvious throw.
+        """Play like an average opponent instead of resigning move by move.
 
-        The moves are ranked with a shallow search (worst first); the outright
-        blunders are dropped - never the single worst move, and nothing that
-        loses a whole piece for free - and the bot picks at random from the
-        weaker half that is left.  That loses the game slowly and looks like a
-        normal mistake instead of a suspicious "resignation".
+        The position is ranked with a *shallow* search (the full one is used when
+        the bot has to win), every move that gives away material is dropped, so
+        nothing is left hanging and no piece is handed over for free.  The best
+        move itself is skipped: the game drifts towards a loss the way it does
+        against a mediocre human - a missed continuation, not a thrown game.
         """
         ranked = self.ai.rank_moves(board, allowed=allowed, depth=4)
         if not ranked:
             return None
         if len(ranked) == 1:
             return ranked[0][1]
-        sane = [item for item in ranked if item[0] > -50_000]
-        pool = sane if len(sane) > 1 else list(ranked)
-        pool = pool[: max(1, int(len(pool) * 0.6))]
-        if len(pool) > 1:
-            pool = pool[1:]              # never the absolute worst move
-        return random.choice(pool)[1]
+        ranked.sort(key=lambda item: item[0], reverse=True)      # best first
+        best_score = ranked[0][0]
+        sane = [item for item in ranked if item[0] >= best_score - self.MEDIUM_WINDOW]
+        if len(sane) <= 1:
+            # every alternative is much worse: nothing sensible to pick, so the
+            # best move is played and the game is simply lost more slowly
+            return ranked[0][1]
+        return random.choice(sane[1:])[1]
 
     def _save_debug(self, tag: str) -> None:
         stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -807,8 +818,11 @@ class CheckersBot:
     # after a game: rematch, or a new opponent
     # ------------------------------------------------------------------
     def _answer_offers(self, state: SiteState) -> bool:
-        """Answer the two mid-game dialogs that would otherwise stall the game.
+        """Answer the mid-game dialogs that would otherwise stall the game.
 
+        * **a draw offer** (``opponent.draw``): the client shows "the opponent
+          offers a draw" over the board and the clock keeps running, so an
+          unanswered offer is a loss on time.  The bot agrees at once.
         * **a bigger stake** (``opponent.coins > 0``): the site's dialog is *not*
           cancelable, so nothing else can be clicked until it is answered.  The
           bot always accepts (the stake only grows) and logs the amount.
@@ -822,6 +836,29 @@ class CheckersBot:
         instead of trying to play behind a modal dialog.
         """
         waiting = False
+        if state.draw_offer:
+            if self._draw_offer_answered:
+                # agreed: the server ends the game now, nothing left to wait for
+                waiting = False
+            else:
+                self._draw_offer_tries += 1
+                answer = str(self.site.accept_draw_offer())
+                if answer in ("", "none", "None"):
+                    if not self._draw_offer_dumped:
+                        self._draw_offer_dumped = True
+                        self.log("! could not press the draw offer's agree button - "
+                                 "saving the page for diagnosis")
+                        self._save_debug("draw-offer")
+                else:
+                    self._draw_offer_answered = True
+                    self.log(f"the opponent offers a draw - agreed ({answer})")
+                # the board must not be clicked while the dialog is up, but the bot
+                # must not sit behind a dialog whose button cannot be found either
+                waiting = self._draw_offer_tries < 15
+        else:
+            self._draw_offer_answered = False
+            self._draw_offer_tries = 0
+
         if state.coin_offer and state.coin_offer != self._coin_offer_answered:
             answer = str(self.site.accept_coin_offer())
             if answer in ("", "none", "None"):
@@ -981,6 +1018,9 @@ class CheckersBot:
         self._chat_offer_since = None
         self._coin_offer_answered = 0
         self._coin_offer_dumped = False
+        self._draw_offer_answered = False
+        self._draw_offer_dumped = False
+        self._draw_offer_tries = 0
         self.my_site_color = (
             None if self.requested_site_color == "auto" else self.requested_site_color
         )
@@ -993,21 +1033,25 @@ class CheckersBot:
         self.calibrated = self.my_engine_color is not None
 
     def _next_game(self, state: SiteState) -> bool:
-        """Try a rematch; if nobody wants one, leave and find a new opponent.
+        """Offer a rematch; if nobody wants one, leave and find a new opponent.
 
         The site's own finish dialog offers "Rematch" for 30 s (it POSTs
         ``act=rematch_request`` and then waits); on acceptance it reloads the page
         with a new ``game_id``, and on refusal it drops back to the lobby.  The
-        bot does the same thing: ask once, wait, then walk the lobby again.
+        bot does the same thing — and it is the one who *asks*: the request goes
+        out at once, and it is repeated whenever the site is not showing its
+        "waiting for the opponent" dialog any more (a request sent while the page
+        was still loading can be lost, and the site's own offer expires).
         """
         self.games_played += 1
         self.log(
-            f"game {self.games_played} is over - waiting up to "
-            f"{int(self.rematch_wait)}s for a rematch"
+            f"game {self.games_played} is over - offering a rematch "
+            f"({int(self.rematch_wait)}s for the answer)"
         )
         request_sent = False
         none_answers = 0
         fresh_reads = 0
+        last_offer = 0.0
         deadline = time.time() + self.rematch_wait
         while time.time() < deadline:
             if self._stop_requested():
@@ -1024,14 +1068,17 @@ class CheckersBot:
                     return True
             else:
                 fresh_reads = 0
-            if not request_sent:
+            # nobody is waiting on the site any more: the offer expired (or never
+            # arrived), so ask again instead of quietly walking away
+            expired = current is None or not current.waiting
+            if not request_sent or (expired and time.time() - last_offer >= 5.0):
                 answer = str(self.site.request_rematch())
                 if answer not in ("", "none", "None"):
                     request_sent = True
-                    self.log(f"rematch requested ({answer})")
+                    last_offer = time.time()
+                    self.log(f"rematch offered to the opponent ({answer}) - "
+                             "waiting for them to accept")
                 else:
-                    # the finish data can lag a moment behind the dialog: do not
-                    # walk away from a table that is still willing to rematch
                     none_answers += 1
                     if none_answers >= 3:
                         self.log("the site offers no rematch - the opponent left")

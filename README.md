@@ -238,7 +238,8 @@ Notes from getting this green in CI:
    `SECONDS` in `src/checkersbot_ios/app.py`) and keeps going: when a game ends
    it asks for a rematch, waits up to 30 s, and then leaves the table and looks
    for a new opponent — until you press **■ გაჩერება**.  **😞 მარცხი** makes it
-   lose the current game with a believable weak move (see "Losing on purpose").
+   lose the current game with average-player moves — nothing is handed over for
+   free (see "Losing on purpose").
 3. The log under the board shows the same lines as the desktop bot.
 4. While the bot runs the app keeps the screen awake (`idleTimerDisabled`), so
    the game continues when nobody touches the phone. iOS suspends apps that go
@@ -400,11 +401,16 @@ it:
 
 1. the lobby is walked once (**Play a game → Random people → stake**);
 2. the game is played to the end;
-3. the finish dialog offers **Rematch** for 30 s; the bot asks for it through the
-   site's own API (`init_play.rematch({opponent_id})` — the exact call the button
-   makes), so it works in any site language;
-4. if the opponent accepts, the page reloads with a new `game_id` and the bot
-   carries on (a rematch can swap the colours, so it calibrates itself again);
+3. the bot **offers the rematch itself**: the finish dialog keeps **Rematch** for
+   30 s, and the bot asks through the site's own API
+   (`init_play.rematch({opponent_id})` — the exact call the button makes), so it
+   works in any site language. The request is sent at once and repeated when the
+   site is no longer showing its "waiting for the opponent" dialog (a request can
+   be lost while the page is still loading, and the site's offer expires) —
+   `rematch offered to the opponent (requested:123) - waiting for them to accept`;
+4. if the opponent accepts — or if *they* offered first — the page reloads with a
+   new `game_id` and the bot carries on (a rematch can swap the colours, so it
+   calibrates itself again); an incoming offer is accepted with the same call;
 5. if nobody accepts, or the site offers no rematch at all, the bot leaves the
    table, reloads the lobby and searches a new opponent — then it is back at
    step 2.
@@ -429,10 +435,18 @@ button and starts the search again instead of stalling. A healthy search is
 allowed to run as long as it needs, and when no table comes back the bot **keeps
 searching until you stop it** (it only logs `no table yet - searching again`).
 
-### Mid-game dialogs (bigger stake, chat)
+### Mid-game dialogs (draw offer, bigger stake, chat)
 
-Two dialogs can appear in the middle of a game and both used to freeze the bot:
+Three dialogs can appear in the middle of a game — each of them freezes the board,
+and the clock keeps running behind them:
 
+* **the opponent offers a draw** — `game_data.opponent.draw` makes the client
+  pop up „მოწინააღმდეგე გთავაზობთ ფრეს“ with **თანხმობა / უარი**. Ignoring it
+  loses the game on time (the site's own endgames are usually dead draws anyway,
+  e.g. two against two), so the bot **always agrees**: it clicks the dialog's
+  accept button (`the opponent offers a draw - agreed (clicked)`), answers each
+  offer exactly once, and only waits behind the dialog for a few seconds if the
+  button cannot be found (then it saves `logs/draw-offer-*.html/.png` once);
 * **the opponent offers a bigger stake** — the site sets
   `game_data.opponent.coins > 0` and shows a dialog that is **not cancelable** and
   only lives for ~10 s. The bot answers it immediately: the page is polled during
@@ -459,16 +473,21 @@ checked.
 
 Both UIs have a switch that makes the bot **lose the current game** — the
 **😞 მარცხი** button next to Start/Stop in the panel (it ticks the checkbox in
-group 4), the same **😞 მარცხი** button in the iOS app, and `--lose` on the CLI:
+group 4), the same **😞 მარცხი** button in the iOS app, and `--lose` on the CLI.
+It does **not** play like a beginner: it plays like an **average club player**,
+so a loss looks like a bad day, not like a thrown game:
 
-* every move of that game is played from a **shallow ranking of all legal
-  moves** (`CheckersAI.rank_moves`, worst → best);
-* the outright blunders are dropped — never the single worst move, nothing that
-  gives a piece away for free — and one of the remaining weaker moves is picked
-  at random;
-* the result looks like a normal human slip (a quiet move instead of the best
-  one), not like an obvious resignation, and the bot keeps playing and searching
-  for the next opponent afterwards.
+* the position is ranked with a **shallow** search (`CheckersAI.rank_moves`,
+  depth 4, worst → best) instead of the full one;
+* every move that hands a piece over is dropped — the picks stay within
+  `MEDIUM_WINDOW = 80` evaluation units (0.8 of a man) of the best move, so
+  nothing is left hanging and no piece is given away for free;
+* the best move itself is skipped, so the game really does drift towards a loss
+  (a missed continuation, a passive move) — measured against a full-strength
+  engine it loses material slowly instead of collapsing: ~9 units (0.09 man) per
+  move on average, never more than 0.8;
+* if every alternative is much worse, it plays the best move and loses slowly;
+* the bot keeps playing and searching for the next opponent afterwards.
 
 The switch only affects the running game; it is cleared when the bot stops.
 

@@ -1,0 +1,60 @@
+﻿					args.data.finish.winner !== args.data.finish.player.user_id
+				) {
+					if(!obj.self.interstitial) {
+						obj.self.interstitial = true;
+
+						// app 4.0+: the native side decides whether an ad is due; when it is closed the same button is pressed again
+						if(typeof withNativeInterstitial == 'function' && appIsNew()) {
+							var again = button;
+
+							withNativeInterstitial(function() {
+								again.trigger('click');
+							});
+
+							return false;
+						}
+
+						if(isApp() == 'android') {
+							if(
+								hasInterface('interstitialCanBePlayer')
+									&&
+								window.android_interface.interstitialCanBePlayer()
+									&&
+								hasInterface('showInterstitialAds_')
+							) {
+								// show interstitial ad
+								window.android_interface.showInterstitialAds_();
+
+								return false;
+							}
+						} else if(isApp() == 'ios') {
+							// show interstitial ad
+							window.webkit.messageHandlers.showInterstitialAds.postMessage("");
+
+							return false;
+						}
+
+						// show local ads
+						loadInter();
+
+						return false;
+					}
+				}
+
+				// hide dialog
+				dialog.hide();
+
+				// redirect
+				location.href = '/'+conf.game.path+'/?noCache='+timestamp();
+			}
+		};
+
+		// rematch button
+		if(args.data.finish.rematch) {
+			// show the opponent's rematch request right here
+			if(typeof init_users == 'object' && init_users.rematch_watch) {
+				init_users.rematch_watch({
+					'opponent_id': args.data.finish.rematch
+				});
+			}
+

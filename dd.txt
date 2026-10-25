@@ -1,0 +1,54 @@
+﻿			// set hand
+			obj.self.hand = data.game.info.hand;
+
+			// reset draw
+			obj.self.opponent_draw = false;
+
+			$('.draw-button').remove();
+
+			// create table
+			$('.game-table').html('');
+			
+			obj.self.table({
+				'type': data.game.player.type
+			});
+		}
+		
+		/* all time actions */
+
+		// set can action
+		obj.self.canAction = data.game.player.action;
+
+		// system message
+		if(
+			data.game.info.step > 0
+				||
+			data.game.player.action == 'no'
+		) {
+		}
+
+		// check opponent draw
+		if(
+			!obj.self.opponent_draw
+				&&
+			data.game.opponent.draw
+		) {
+			obj.self.opponent_draw = true;
+
+			// close chat dialogs
+			$('.chat-dialog').remove();
+			
+			// show offer
+			confirmDialog({
+				'title': 'შეთავაზება',
+				'text': 'მოწინააღმდეგე გთავაზობთ ფრეს',
+				'cancelable': true,
+				'buttons': {
+					'layout': 'horizontal',
+					'items': {
+						'თანხმობა': {
+							'callback':  function(dialog, button) {
+								// hide dialog
+								dialog.hide();
+
+								// accept offer

@@ -1,0 +1,28 @@
+﻿-----
+	function part(d, cls) {
+		return d.querySelector('.big-dialog-'+cls);
+	}
+
+	function svg(name) {
+		return '<svg viewBox="0 0 24 24" aria-hidden="true">'+SVG[name]+'</svg>';
+	}
+
+	function format(n) {
+		return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+	}
+
+	function kind(d) {
+-----
+	function emblem(d, html, mods, plain) {
+		var inner = part(d, 'inner');
+		if(!inner || (inner.firstElementChild && has(inner.firstElementChild, 'v2m-emb'))) return;
+
+		if(!plain) {
+			d.classList.add('v2m-e');
+		}
+
+		var emb = document.createElement('div');
+		emb.className = 'v2m-emb'+(mods ? ' '+mods : '');
+		emb.innerHTML = html;
+		inner.insertBefore(emb, inner.firstChild);
+	}

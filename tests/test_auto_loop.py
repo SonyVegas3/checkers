@@ -21,7 +21,8 @@ from checkersbot.site import SiteState       # noqa: E402
 
 
 def _raw(finished: bool, step: int, my_turn: bool = True,
-         opponent_coins: int = 0, opponent_chat: str = "no") -> dict:
+         opponent_coins: int = 0, opponent_chat: str = "no",
+         opponent_draw: bool = False) -> dict:
     """A board as READ_STATE_JS returns it (ready: 32 squares, 24 stones)."""
     squares = []
     for index in range(64):
@@ -51,6 +52,7 @@ def _raw(finished: bool, step: int, my_turn: bool = True,
             "playerChat": "no",
             "opponentChat": opponent_chat,
             "opponentCoins": opponent_coins,
+            "opponentDraw": opponent_draw,
         },
     }
 
@@ -69,10 +71,16 @@ class FakeSite:
         self.games_entered = 0
         self.coin_accepts = 0
         self.chat_declines = 0
+        self.draw_accepts = 0
+        self.rematch_requests = 0
         self.searches_cancelled = 0
 
     def accept_coin_offer(self) -> str:
         self.coin_accepts += 1
+        return "clicked"
+
+    def accept_draw_offer(self) -> str:
+        self.draw_accepts += 1
         return "clicked"
 
     def decline_chat_offer(self) -> str:
@@ -96,6 +104,7 @@ class FakeSite:
         return "clicked"
 
     def request_rematch(self) -> str:
+        self.rematch_requests += 1
         return self.rematch
 
     def open_lobby(self) -> bool:
@@ -250,23 +259,90 @@ class AutoLoopTests(unittest.TestCase):
         scores = [score for score, _ in ranked]
         self.assertEqual(scores, sorted(scores))          # worst first
 
-    def test_the_weak_move_is_legal_and_never_the_best(self):
+    def test_the_weak_move_is_legal_and_not_a_blunder(self):
         board = Board()
         site = FakeSite([SiteState(_raw(False, 1))])
         bot = self._bot(site, should_lose=lambda: True)
         self.assertTrue(bot._lose_requested())
 
         legal = board.generate_moves()
-        best = bot.ai.choose_move(board)
+        ranked = bot.ai.rank_moves(board, depth=4)          # worst first
+        best = ranked[-1][0]
+        score_of = {str(move): value for value, move in ranked}
+        picks = set()
         for _ in range(8):
             weak = bot._choose_weak_move(board, legal)
             self.assertIsNotNone(weak)
             self.assertIn(weak, legal)
-            self.assertNotEqual(weak, best)               # a slip, not a throw
+            # an average player misses the best move but does not give a piece
+            # away: every pick stays within the "medium" window of the best one
+            self.assertGreaterEqual(score_of[str(weak)], best - bot.MEDIUM_WINDOW)
+            picks.add(str(weak))
+        self.assertGreater(len(picks), 0)
 
     def test_losing_is_off_by_default(self):
         bot = self._bot(FakeSite([SiteState(_raw(False, 1))]))
         self.assertFalse(bot._lose_requested())
+
+    def test_a_draw_offer_is_agreed_at_once(self):
+        offered = SiteState(_raw(False, 12, opponent_draw=True))
+        site = FakeSite([offered])
+        bot = self._bot(site)
+
+        # the dialog covers the board and the clock runs: agree and wait
+        self.assertTrue(bot._answer_offers(offered))
+        self.assertEqual(site.draw_accepts, 1)
+        self.assertTrue(bot._draw_offer_answered)
+        # the server flag may linger a moment: never click twice, and do not keep
+        # blocking the loop - the game is over now, the rematch logic takes over
+        self.assertFalse(bot._answer_offers(offered))
+        self.assertEqual(site.draw_accepts, 1)
+
+    def test_a_draw_offer_is_answered_while_the_engine_thinks(self):
+        board = Board()
+        offered = SiteState(_raw(False, 12, opponent_draw=True))
+        site = FakeSite([offered])
+        bot = self._bot(site, depth=6, time_limit=1.0)
+
+        move = bot._search_move(board)
+        self.assertIsNotNone(move)
+        self.assertGreaterEqual(site.draw_accepts, 1)
+
+    def test_a_new_draw_offer_is_answered_after_the_old_one_cleared(self):
+        offered = SiteState(_raw(False, 12, opponent_draw=True))
+        cleared = SiteState(_raw(False, 13))
+        site = FakeSite([offered, cleared])
+        bot = self._bot(site)
+
+        self.assertTrue(bot._answer_offers(offered))
+        self.assertEqual(site.draw_accepts, 1)
+        self.assertFalse(bot._answer_offers(cleared))       # nothing pending
+        self.assertFalse(bot._draw_offer_answered)
+        self.assertTrue(bot._answer_offers(offered))
+        self.assertEqual(site.draw_accepts, 2)
+
+    def test_an_unclickable_draw_offer_does_not_stall_the_bot(self):
+        offered = SiteState(_raw(False, 12, opponent_draw=True))
+        site = FakeSite([offered])
+        site.accept_draw_offer = lambda: "none"             # dialog not found
+        bot = self._bot(site)
+
+        for _ in range(14):
+            self.assertTrue(bot._answer_offers(offered))
+        # after 15 tries the bot stops waiting so the game cannot hang forever
+        self.assertFalse(bot._answer_offers(offered))
+
+    def test_the_bot_offers_a_rematch_itself(self):
+        finished = SiteState(_raw(True, 40))
+        fresh = SiteState(_raw(False, 2))
+        site = FakeSite([finished, fresh, fresh, fresh])
+        bot = self._bot(site, rematch_wait=2.0)
+        lines = []
+        bot._log = lines.append
+
+        self.assertTrue(bot._next_game(finished))
+        self.assertGreaterEqual(site.rematch_requests, 1)
+        self.assertTrue(any("rematch offered" in line for line in lines), lines)
 
 
     def test_an_offer_is_answered_while_the_engine_thinks(self):

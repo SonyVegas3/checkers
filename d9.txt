@@ -1,0 +1,33 @@
+﻿			}
+		};
+
+		// rematch button
+		if(args.data.finish.rematch) {
+			// show the opponent's rematch request right here
+			if(typeof init_users == 'object' && init_users.rematch_watch) {
+				init_users.rematch_watch({
+					'opponent_id': args.data.finish.rematch
+				});
+			}
+
+			finish_buttons[lang.text(124)] = { // რემატჩი
+				'callback': function(dialog, button) {
+					// hide dialog
+					// dialog.hide();
+					
+					// rematch
+					init_play.rematch({
+						'opponent_id': args.data.finish.rematch
+					});
+
+					// log event
+					gtag('event', 'play_rematch');
+				}
+			};
+		}
+
+		// check tournament
+		if(args.data.finish.tournament) {
+			
+			// tournament button
+			finish_buttons[lang.text(305)] = { // შემდეგი

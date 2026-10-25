@@ -1,0 +1,61 @@
+﻿    this.rematch_watch = function(args) {
+        var opponent_id = String(args.opponent_id || '');
+
+        if(
+            !opponent_id
+                ||
+            obj.self.rematch_opponent
+        ) {
+            return;
+        }
+
+        obj.self.rematch_opponent = opponent_id;
+
+        if(!obj.self.checker_interval) {
+            obj.self.update = -1;
+            obj.self.checker({
+                'action': 'start',
+                'interval': 2000
+            });
+        }
+    }
+
+    // true when the request is shown in the finish dialog
+    this.rematch_offer = function(notification) {
+        var from = String(notification.data || '');
+
+        // older requests carry the id of the receiver
+        if(
+            !obj.self.rematch_opponent
+                ||
+            (from !== obj.self.rematch_opponent && from !== String(obj.id))
+        ) {
+            return false;
+        }
+
+        var again = lang.text(124); // რემატჩი
+        var button = $('.big-dialog:visible .big-dialog-footer .big-dialog-button').filter(function() {
+            var text = $.trim($(this).text());
+
+            return (text == again || text == 'რემატჩი');
+        }).first();
+
+        if(!button.length) {
+            return false;
+        }
+
+        var T = function(geo, eng) {
+            return (typeof chat == 'function' && chat.t) ? chat.t(geo, eng):geo;
+        };
+
+        var footer = button.closest('.big-dialog-footer');
+
+        footer.siblings('.rm-offer').remove();
+        clearInterval(obj.self.rematch_timer);
+
+        var offer = $(document.createElement('div')).addClass('rm-offer');
+        var photo = $(document.createElement('i')).appendTo(offer);
+        var info = $(document.createElement('div')).appendTo(offer);
+        var left = $(document.createElement('em')).appendTo(offer);
+
+        if(notification.icon && /^[\w\/.\-]+$/.test(notification.icon)) {
