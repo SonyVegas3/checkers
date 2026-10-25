@@ -939,6 +939,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="comma separated 'thinking' times: the first move of a "
                              "game is quick, every later move waits one of these at "
                              "random (default: 2,3,5,7; 0 = no delay)")
+    parser.add_argument("--quick-delays", default="1,2,3",
+                        help="times used instead when the move was obvious (a forced "
+                             "capture, one clearly best move) - default: 1,2,3")
     parser.add_argument("--lose", action="store_true",
                         help="lose on purpose, but only with average-player moves: "
                              "nothing is handed over for free")
@@ -991,6 +994,11 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
     think_delays = tuple(
         float(part)
         for part in str(getattr(args, "think_delays", "") or "").replace(" ", "").split(",")
+        if part
+    )
+    quick_delays = tuple(
+        float(part)
+        for part in str(getattr(args, "quick_delays", "") or "").replace(" ", "").split(",")
         if part
     )
 
@@ -1094,6 +1102,7 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
                 rematch_wait=args.rematch_wait,
                 chat_wait=args.chat_wait,
                 think_delays=think_delays,
+                quick_delays=quick_delays,
                 log=log,
                 should_stop=should_stop,
                 should_lose=should_lose,

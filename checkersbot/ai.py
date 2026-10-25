@@ -153,9 +153,15 @@ class SearchTimeout(Exception):
 
 
 class SearchStats:
-    """Diagnostics of the last :meth:`CheckersAI.choose_move` call."""
+    """Diagnostics of the last :meth:`CheckersAI.choose_move` call.
 
-    __slots__ = ("depth", "nodes", "score", "elapsed", "move", "note")
+    ``gap`` is how far the second-best root move is behind the best one: a big
+    gap means the move was obvious (a forced capture, the only sensible
+    continuation), a small one means the position needed real thinking.  The bot
+    uses it to "think" for a plausible time instead of always waiting the same.
+    """
+
+    __slots__ = ("depth", "nodes", "score", "elapsed", "move", "note", "gap")
 
     def __init__(
         self,
@@ -165,6 +171,7 @@ class SearchStats:
         elapsed: float = 0.0,
         move: Optional[Move] = None,
         note: str = "",
+        gap: int = 0,
     ) -> None:
         self.depth = depth
         self.nodes = nodes
@@ -172,6 +179,7 @@ class SearchStats:
         self.elapsed = elapsed
         self.move = move
         self.note = note
+        self.gap = gap
 
     def __str__(self) -> str:
         move = self.move.notation() if self.move is not None else "-"
@@ -263,12 +271,15 @@ class CheckersAI:
             return move
 
         target_depth = self.dynamic_depth(work)
-        best_move, best_score, reached_depth, note = self._deepen(work, target_depth, allowed)
+        best_move, best_score, reached_depth, note, gap = self._deepen(
+            work, target_depth, allowed
+        )
 
         if best_move is None:                      # cannot happen, kept for safety
             best_move = moves[0]
         self.stats = SearchStats(
-            reached_depth, self._nodes, best_score, time.perf_counter() - start, best_move, note
+            reached_depth, self._nodes, best_score, time.perf_counter() - start,
+            best_move, note, gap,
         )
         return best_move
 
@@ -305,6 +316,9 @@ class CheckersAI:
             work.unmake_move(move, undo)
             scored.append((score, move))
         scored.sort(key=lambda item: item[0])
+        gap = 0
+        if len(scored) > 1:
+            gap = max(0, scored[-1][0] - scored[-2][0])
         self.stats = SearchStats(
             depth,
             self._nodes,
@@ -312,6 +326,7 @@ class CheckersAI:
             time.perf_counter() - start,
             scored[-1][1] if scored else None,
             "ranked",
+            gap,
         )
         return scored
 
@@ -322,14 +337,16 @@ class CheckersAI:
         best_move: Optional[Move] = None
         best_score = -INF
         reached_depth = 0
+        gap = 0
         note = ""
         try:
             for depth in range(1, target_depth + 1):
-                move, score = self._search_root(
+                move, score, iteration_gap = self._search_root(
                     board, depth, best_move if reached_depth else None, allowed
                 )
                 if move is not None:
                     best_move, best_score, reached_depth = move, score, depth
+                    gap = iteration_gap
                 if best_move is not None and abs(best_score) >= MATE_THRESHOLD:
                     note = "forced result"
                     break
@@ -340,7 +357,7 @@ class CheckersAI:
             note = "time limit"
             board.cells[:] = snapshot
             board.turn = turn
-        return best_move, best_score, reached_depth, note
+        return best_move, best_score, reached_depth, note, gap
 
     def _search_root(self, board: Board, depth: int, preferred: Optional[Move] = None,
                      allowed=None):
@@ -353,16 +370,22 @@ class CheckersAI:
         alpha, beta = -INF, INF
         best_move = ordered[0]
         best_score = -INF
+        second_score = -INF
         for move in ordered:
             undo = board.make_move(move)
             score = -self._negamax(board, depth - 1, -beta, -alpha, 1)
             board.unmake_move(move, undo)
             if score > best_score:
+                second_score = best_score
                 best_score = score
                 best_move = move
                 if score > alpha:
                     alpha = score
-        return best_move, best_score
+            elif score > second_score:
+                second_score = score
+        # how far the runner-up is behind: a big gap means the move was obvious
+        gap = 0 if second_score <= -INF else max(0, best_score - second_score)
+        return best_move, best_score, gap
 
     def _negamax(self, board: Board, depth: int, alpha: int, beta: int, ply: int) -> int:
         """Alpha-beta negamax with a transposition table and jump quiescence."""

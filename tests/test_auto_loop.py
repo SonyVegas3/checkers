@@ -227,11 +227,35 @@ class AutoLoopTests(unittest.TestCase):
         # first sight: the bot waits (so you can accept it yourself)
         self.assertTrue(bot._answer_offers(chat))
         self.assertEqual(site.chat_declines, 0)
-        # after the delay it declines and keeps playing
+        # after the delay it declines and keeps playing - the board is free again
         bot._chat_offer_since = time.time() - bot.chat_wait - 0.1
-        self.assertTrue(bot._answer_offers(chat))
+        self.assertFalse(bot._answer_offers(chat))
         self.assertEqual(site.chat_declines, 1)
         self.assertIsNone(bot._chat_offer_since)
+        self.assertTrue(bot._chat_handled)
+
+    def test_a_chat_offer_that_stays_set_does_not_freeze_the_bot(self):
+        # the server keeps ``opponent.chat == 'yes'`` until the invitation is
+        # accepted, so the bot must play on after declining it once
+        chat = SiteState(_raw(False, 10, opponent_chat="yes"))
+        site = FakeSite([chat])
+        bot = self._bot(site)
+        bot._chat_offer_since = time.time() - bot.chat_wait - 0.1
+        self.assertFalse(bot._answer_offers(chat))            # declined, play on
+        for _ in range(20):
+            self.assertFalse(bot._answer_offers(chat))        # never blocks again
+        self.assertEqual(site.chat_declines, 1)
+
+    def test_a_chat_dialog_that_cannot_be_closed_does_not_block(self):
+        chat = SiteState(_raw(False, 10, opponent_chat="yes"))
+        site = FakeSite([chat])
+        site.decline_chat_offer = lambda: "none"              # dialog not found
+        bot = self._bot(site)
+        bot._chat_offer_since = time.time() - bot.chat_wait - 0.1
+        for _ in range(9):
+            self.assertTrue(bot._answer_offers(chat))
+        self.assertFalse(bot._answer_offers(chat))            # gives up and plays
+        self.assertTrue(bot._chat_handled)
 
 
     def test_the_lobby_walk_opens_a_table_quickly(self):
@@ -332,7 +356,51 @@ class AutoLoopTests(unittest.TestCase):
         # after 15 tries the bot stops waiting so the game cannot hang forever
         self.assertFalse(bot._answer_offers(offered))
 
-    def test_the_bot_offers_a_rematch_itself(self):
+    def test_the_search_reports_how_obvious_the_move_was(self):
+        board = Board()
+        bot = self._bot(FakeSite([SiteState(_raw(False, 1))]))
+        bot.ai.choose_move(board)
+        self.assertGreaterEqual(bot.ai.stats.gap, 0)          # best minus runner-up
+        bot.ai.rank_moves(board, depth=3)
+        self.assertGreaterEqual(bot.ai.stats.gap, 0)
+
+    def test_a_simple_position_is_answered_quickly(self):
+        # a single legal move: nothing to think about, so the short pause is used
+        one_choice = Board.from_rows(["........"] * 7 + ["r......."], turn=RED,
+                                     rules="joker")
+        legal = one_choice.generate_moves()
+        self.assertEqual(len(legal), 1)
+
+        site = FakeSite([SiteState(_raw(False, 1))])
+        bot = self._bot(site, think_delays=(5.0,), quick_delays=(0.05,))
+        bot.moves_in_game = 3
+        started = time.time()
+        self.assertTrue(bot._simple_move(legal))
+        bot._think(legal)
+        self.assertLess(time.time() - started, 1.0)
+
+    def test_a_hard_position_waits_longer(self):
+        board = Board()
+        legal = board.generate_moves()
+        site = FakeSite([SiteState(_raw(False, 1))])
+        bot = self._bot(site, think_delays=(0.4,), quick_delays=(0.01,))
+        bot.moves_in_game = 3
+        bot.ai.choose_move(board)                     # fill in the stats of a real search
+        bot.obvious_gap = 10_000                      # nothing counts as obvious here
+        self.assertFalse(bot._simple_move(legal))
+        started = time.time()
+        bot._think(legal)
+        self.assertGreaterEqual(time.time() - started, 0.35)
+
+    def test_the_opening_move_is_played_at_once(self):
+        legal = Board().generate_moves()
+        site = FakeSite([SiteState(_raw(False, 1))])
+        bot = self._bot(site, think_delays=(5.0,), quick_delays=(5.0,))
+        bot.moves_in_game = 0
+        started = time.time()
+        bot._think(legal)
+        self.assertLess(time.time() - started, 1.6)   # 0.4-1.2 s only
+
         finished = SiteState(_raw(True, 40))
         fresh = SiteState(_raw(False, 2))
         site = FakeSite([finished, fresh, fresh, fresh])

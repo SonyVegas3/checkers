@@ -382,7 +382,8 @@ python web_bot.py --headless --max-moves 20 --poll 0.5
 | `--max-games` | `0` (∞) | stop after N games — the default plays on: rematch, then a new opponent |
 | `--rematch-wait` | `30` | seconds to wait for a rematch after a game (the site's own window) |
 | `--chat-wait` | `5` | seconds a chat invitation is left alone before the bot declines it |
-| `--think-delays` | `2,3,5,7` | human-like pauses before a move: the first move of a game is quick, later moves wait one of these at random (`0` = no waiting) |
+| `--think-delays` | `2,3,5,7` | human-like pauses when the position was hard: the first move of a game is quick, later moves wait one of these at random (`0` = no waiting) |
+| `--quick-delays` | `1,2,3` | the same for an obvious move (one or two choices, a forced capture, one clearly best move) |
 | `--lose` | off | play weak moves on purpose (lose the game with a believable mistake) |
 | `--max-errors` | `5` | stop after N consecutive failures (screenshots are saved to `logs/`) |
 | `--no-probe` | off | trust the engine without asking the site (debug only) |
@@ -423,8 +424,15 @@ and `STAKE = 0`.
 **Human pace.** The engine answers in milliseconds, which looks robotic, so the
 bot waits like a player would: the **first move of a game is played quickly**
 (0.4–1.2 s) and every later move waits one of `--think-delays` seconds at random
-(default `2,3,5,7`) before the search starts. The log shows `thinking 5.0s ...`.
-Set `--think-delays 0` (or clear the panel field) to switch it off.
+(default `2,3,5,7`) — **but only when the position deserved it**. The pause now
+comes *after* the search, so the bot knows how hard the move was: a position with
+one or two choices, a forced capture or a move that is clearly better than every
+alternative (the engine reports the gap to the runner-up, ≥ 1.5 men counts as
+obvious) waits one of the shorter `--quick-delays` (default `1,2,3`) instead of
+seven seconds. The log says which one it used:
+`thinking 3.0s ... (easy position)` / `thinking 7.0s ... (thinking)` /
+`thinking 0.8s ... (opening)`. Set `--think-delays 0` (or clear the panel field)
+to switch it off.
 
 **Fast lobby.** Returning to the lobby used to wait up to 30 s *after every
 click* (`Play a game` → `Random people` → stake are three separate dialogs, and
@@ -459,6 +467,10 @@ and the clock keeps running behind them:
   seconds, so you can accept it yourself while watching, and then declines it
   (the site's own "decline" is a client-side close, nothing is sent) and plays on:
   `the opponent asks to chat - declining in 5s` → `chat invitation declined - playing on`.
+  The server keeps `opponent.chat == 'yes'` until the invitation is **accepted**,
+  so the flag alone must never block the game: the dialog is dismissed once, it is
+  re-hidden if it comes back, and the bot plays on (it only ever waits the
+  `--chat-wait` seconds once per invitation).
 
 Both are recognised by the site's own translated strings (`lang.text(281)` /
 `lang.text(284)`), so they keep working in Georgian, English or any other

@@ -68,6 +68,8 @@ class CheckersBot:
         rematch_wait: float = 30.0,
         chat_wait: float = 5.0,
         think_delays: Sequence[float] = (2.0, 3.0, 5.0, 7.0),
+        quick_delays: Sequence[float] = (1.0, 2.0, 3.0),
+        obvious_gap: int = 150,
         log=None,
         should_stop=None,
         should_lose=None,
@@ -112,13 +114,20 @@ class CheckersBot:
         # how long a chat invitation is left alone before the bot declines it
         self.chat_wait = max(1.0, float(chat_wait))
         # human-like pacing: the first move of a game is quick, the rest waits one
-        # of these times ("thinking"), so the bot does not play like a machine
+        # of these times ("thinking"), so the bot does not play like a machine.
+        # ``quick_delays`` is used when the position was easy (a forced capture,
+        # one clearly best move) - nobody stares at a simple move for seven seconds
         self.think_delays = tuple(float(delay) for delay in (think_delays or ()))
+        self.quick_delays = tuple(float(delay) for delay in (quick_delays or ()))
+        #: a move this much better than the runner-up (1.5 men) counts as obvious
+        self.obvious_gap = max(0, int(obvious_gap))
         self._thought_step: Optional[object] = None
         self.moves_in_game = 0
         # a search that has run this long without a table is cancelled and retried
         self.search_timeout = 90.0
         self._chat_offer_since: Optional[float] = None
+        self._chat_handled = False
+        self._chat_tries = 0
         self._coin_offer_answered = 0
         self._coin_offer_dumped = False
         self._draw_offer_answered = False
@@ -470,6 +479,13 @@ class CheckersBot:
         if move is None:
             self.failures += 1
             return None
+
+        # the move is chosen: now think about it like a human would, longer when
+        # the position was hard and shorter when it was obvious
+        thought_key = state.step if state.step is not None else ("move", self.moves_played)
+        if thought_key != self._thought_step:
+            self._thought_step = thought_key
+            self._think(legal)
 
         stone = state.stone_at(move.from_square)
         if stone is None or not stone.get("clickable"):
@@ -874,7 +890,13 @@ class CheckersBot:
                          f"{state.coin_offer} coins - accepted ({answer})")
         if state.chat_offer:
             now = time.time()
-            if self._chat_offer_since is None:
+            if self._chat_handled:
+                # the server keeps ``opponent.chat == 'yes'`` until the invitation
+                # is accepted, so the flag alone must not stop the game: the dialog
+                # is closed on our side and the game simply goes on
+                if state.dialog:
+                    self.site.decline_chat_offer()
+            elif self._chat_offer_since is None:
                 self._chat_offer_since = now
                 self.log(f"the opponent asks to chat - declining in "
                          f"{self.chat_wait:.0f}s (accept it yourself to chat)")
@@ -882,13 +904,22 @@ class CheckersBot:
             elif now - self._chat_offer_since >= self.chat_wait:
                 answer = str(self.site.decline_chat_offer())
                 if answer not in ("", "none", "None"):
+                    self._chat_handled = True
                     self._chat_offer_since = None
                     self.log("chat invitation declined - playing on")
-                waiting = True
+                else:
+                    self._chat_tries += 1
+                    # never freeze behind a dialog that cannot be closed
+                    waiting = self._chat_tries < 10
+                    if not waiting:
+                        self._chat_handled = True
+                        self.log("! the chat dialog cannot be closed - playing anyway")
             else:
                 waiting = True
         else:
             self._chat_offer_since = None
+            self._chat_handled = False
+            self._chat_tries = 0
         return waiting
 
     def _watch_offers(self) -> None:
@@ -935,22 +966,45 @@ class CheckersBot:
         move = outcome.get("move")
         return move if isinstance(move, Move) else None
 
-    def _think(self) -> None:
+    def _simple_move(self, legal: Sequence[Move]) -> bool:
+        """Was the move we are about to play obvious?
+
+        A forced capture, a position with one or two choices, or one move that is
+        much better than every alternative needs no long "thinking" pause - a
+        human plays those straight away.
+        """
+        if len(legal) <= 2:
+            return True
+        stats = getattr(self.ai, "stats", None)
+        if stats is None:
+            return False
+        if str(getattr(stats, "note", "")) in ("only move", "forced result"):
+            return True
+        return int(getattr(stats, "gap", 0) or 0) >= self.obvious_gap
+
+    def _think(self, legal: Optional[Sequence[Move]] = None) -> None:
         """Wait like a human before playing.
 
         The first move of a game is played almost at once (a human already knows
-        the opening), every later move waits one of ``think_delays`` seconds at
-        random, so the pace looks natural instead of "instant machine".
+        the opening).  Later moves wait one of ``think_delays`` seconds at random,
+        but a simple position - one or two choices, or one obviously best move -
+        only waits one of the shorter ``quick_delays``: seven seconds are for the
+        moves that really need thinking.
         """
-        if not self.think_delays:
+        if not self.think_delays and not self.quick_delays:
             return
         if self.moves_in_game == 0:
             delay = random.uniform(0.4, 1.2)
+            reason = "opening"
+        elif legal is not None and self.quick_delays and self._simple_move(legal):
+            delay = random.choice(self.quick_delays)
+            reason = "easy position"
         else:
-            delay = random.choice(self.think_delays)
+            delay = random.choice(self.think_delays or self.quick_delays)
+            reason = "thinking"
         if delay <= 0:
             return
-        self.log(f"thinking {delay:.1f}s ...")
+        self.log(f"thinking {delay:.1f}s ... ({reason})")
         deadline = time.time() + delay
         while time.time() < deadline:
             if self._stop_requested():
@@ -1016,6 +1070,8 @@ class CheckersBot:
         self.moves_in_game = 0
         self._thought_step = None
         self._chat_offer_since = None
+        self._chat_handled = False
+        self._chat_tries = 0
         self._coin_offer_answered = 0
         self._coin_offer_dumped = False
         self._draw_offer_answered = False
@@ -1145,9 +1201,8 @@ class CheckersBot:
                     continue
 
                 self._last_wait_log = 0.0
-                if state.step != self._thought_step:
-                    self._thought_step = state.step
-                    self._think()
+                # the "thinking" pause happens inside play_one_move, once the move
+                # is chosen - so an easy position does not wait as long as a hard one
                 move = self.play_one_move()
                 if move is None:
                     if self.failures > self.max_errors:
