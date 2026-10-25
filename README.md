@@ -379,6 +379,7 @@ python web_bot.py --headless --max-moves 20 --poll 0.5
 | `--max-moves` | `0` (∞) | stop after N moves |
 | `--max-games` | `0` (∞) | stop after N games — the default plays on: rematch, then a new opponent |
 | `--rematch-wait` | `30` | seconds to wait for a rematch after a game (the site's own window) |
+| `--chat-wait` | `5` | seconds a chat invitation is left alone before the bot declines it |
 | `--max-errors` | `5` | stop after N consecutive failures (screenshots are saved to `logs/`) |
 | `--no-probe` | off | trust the engine without asking the site (debug only) |
 | `--trace-board` | off | log the parsed board before every move |
@@ -409,6 +410,25 @@ it:
 the same two fields (`მაქს. თამაში`, `რემატჩის ლოდინი`). `■ შეჩერება` / Ctrl+C
 stops between moves. The iOS app does exactly the same with `lobby_walk=True`
 and `STAKE = 0`.
+
+### Mid-game dialogs (bigger stake, chat)
+
+Two dialogs can appear in the middle of a game and both used to freeze the bot:
+
+* **the opponent offers a bigger stake** — the site sets
+  `game_data.opponent.coins > 0` and shows a dialog that is **not cancelable**, so
+  nothing on the board can be clicked until it is answered. The bot **always
+  accepts** and logs `the opponent offers to play for 5000 coins - accepted`
+  (the stake only ever grows, and the offer is answered exactly once);
+* **the opponent wants to chat** — `game_data.opponent.chat == 'yes'` shows a
+  prompt that covers the board. The bot leaves it alone for `--chat-wait`
+  seconds, so you can accept it yourself while watching, and then declines it
+  (the site's own "decline" is a client-side close, nothing is sent) and plays on:
+  `the opponent asks to chat - declining in 5s` → `chat invitation declined - playing on`.
+
+Both are recognised by the site's own translated strings (`lang.text(281)` /
+`lang.text(284)`), so they keep working in Georgian, English or any other
+language; the buttons are clicked by their translated label too.
 
 ### Keeping the whole board visible
 

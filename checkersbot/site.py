@@ -80,7 +80,57 @@ REMATCH_JS = r"""
 })()
 """
 
-#: Walk one step of the lobby: stake dialog -> "Random people" -> "Play a game".
+#: Answer a mid-game dialog by its own translated text, so it works in any language.
+#:
+#: ``marker_id`` is the language string that identifies the dialog (the site keeps
+#: its translations in ``lang.text(<id>)``), ``button_id`` is the button to press.
+#: Chat invitations are only a client-side prompt, so ``hide`` closes the dialog
+#: when the button is not there; the stake dialog is not cancelable at all.
+ANSWER_DIALOG_JS = r"""
+(function () {
+  if (typeof lang !== 'object' || !lang || typeof lang.text !== 'function') return 'none';
+  var marker = String(lang.text(%(marker_id)d) || '').trim();
+  var button_text = String(lang.text(%(button_id)d) || '').trim();
+  var dialogs = document.querySelectorAll('.big-dialog');
+  for (var index = 0; index < dialogs.length; index += 1) {
+    var dialog = dialogs[index];
+    var text = (dialog.textContent || '').trim();
+    if (!marker || text.indexOf(marker) < 0) continue;
+    var buttons = dialog.querySelectorAll('.big-dialog-button');
+    for (var b = 0; b < buttons.length; b += 1) {
+      if (button_text && (buttons[b].textContent || '').trim() === button_text) {
+        buttons[b].click();
+        return 'clicked';
+      }
+    }
+    var light = dialog.querySelector('.big-dialog-button[button-style="light"]');
+    if (light) { light.click(); return 'light'; }
+    if (%(hide)s) {
+      dialog.style.display = 'none';
+      dialog.setAttribute('item-closing', 'yes');
+      return 'hidden';
+    }
+    return 'none';
+  }
+  return 'none';
+})()
+"""
+
+#: "the opponent offers a bigger stake" dialog: accept it (id 281 -> title,
+#: 282 -> the accept button of the site's own confirm dialog).
+ACCEPT_COIN_OFFER_JS = ANSWER_DIALOG_JS % {
+    "marker_id": 281,
+    "button_id": 282,
+    "hide": "false",
+}
+
+#: "the opponent wants to chat" dialog: decline it (284 -> text, 283 -> button).
+DECLINE_CHAT_JS = ANSWER_DIALOG_JS % {
+    "marker_id": 284,
+    "button_id": 283,
+    "hide": "true",
+}
+
 LOBBY_STEP_JS = r"""
 (function () {
   var stake = document.querySelector(%(stake)s);
@@ -215,6 +265,9 @@ READ_STATE_JS = r"""
     opponentAction: data && data.opponent ? data.opponent.action : null,
     playerType: data && data.player ? data.player.type : null,
     playerColor: data && data.player && data.player.color ? data.player.color : null,
+    playerChat: data && data.player ? data.player.chat : null,
+    opponentChat: data && data.opponent ? data.opponent.chat : null,
+    opponentCoins: data && data.opponent ? (parseInt(data.opponent.coins, 10) || 0) : 0,
   };
 
   let stones = domStones;
@@ -333,6 +386,8 @@ class SiteState:
         "player_color",
         "step",
         "step_timeout",
+        "coin_offer",
+        "chat_offer",
         "by_absolute",
         "absolute_by_square",
         "stone_by_square",
@@ -361,6 +416,13 @@ class SiteState:
         self.player_color = server.get("playerColor")
         self.step = server.get("step")
         self.step_timeout = server.get("stepTimeout")
+        # mid-game offers: the opponent's stake (coins > 0 means "raise?" pending)
+        # and a chat invitation (the opponent wants to chat, we have not accepted)
+        self.coin_offer = int(server.get("opponentCoins") or 0)
+        self.chat_offer = (
+            str(server.get("opponentChat") or "") == "yes"
+            and str(server.get("playerChat") or "") != "yes"
+        )
 
         self.by_absolute: Dict[int, Dict[str, object]] = {}
         self.absolute_by_square: Dict[int, int] = {}
@@ -494,3 +556,9 @@ class Site(Protocol):
 
     def open_lobby(self) -> bool:
         """Navigate back to the checkers lobby page (leaves the finished table)."""
+
+    def accept_coin_offer(self) -> str:
+        """Accept the opponent's bigger stake (the dialog blocks the game)."""
+
+    def decline_chat_offer(self) -> str:
+        """Turn down an invitation to chat so the game is not blocked."""

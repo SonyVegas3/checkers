@@ -19,7 +19,8 @@ from checkersbot.bot import CheckersBot      # noqa: E402
 from checkersbot.site import SiteState       # noqa: E402
 
 
-def _raw(finished: bool, step: int, my_turn: bool = True) -> dict:
+def _raw(finished: bool, step: int, my_turn: bool = True,
+         opponent_coins: int = 0, opponent_chat: str = "no") -> dict:
     """A board as READ_STATE_JS returns it (ready: 32 squares, 24 stones)."""
     squares = []
     for index in range(64):
@@ -46,6 +47,9 @@ def _raw(finished: bool, step: int, my_turn: bool = True) -> dict:
             "status": "finish" if finished else "play",
             "playerAction": "yes" if my_turn else "no",
             "step": step,
+            "playerChat": "no",
+            "opponentChat": opponent_chat,
+            "opponentCoins": opponent_coins,
         },
     }
 
@@ -58,6 +62,16 @@ class FakeSite:
         self.rematch = rematch
         self.lobby_opened = False
         self.games_entered = 0
+        self.coin_accepts = 0
+        self.chat_declines = 0
+
+    def accept_coin_offer(self) -> str:
+        self.coin_accepts += 1
+        return "clicked"
+
+    def decline_chat_offer(self) -> str:
+        self.chat_declines += 1
+        return "clicked"
 
     def read_state(self):
         if len(self.states) > 1:
@@ -166,6 +180,34 @@ class AutoLoopTests(unittest.TestCase):
         bot = self._bot(site, lobby_walk=False)
         bot.games_played = 1
         self.assertEqual(bot.run(max_games=1), 0)
+
+    def test_a_bigger_stake_is_accepted_once(self):
+        offered = SiteState(_raw(False, 10, opponent_coins=5000))
+        site = FakeSite([offered])
+        bot = self._bot(site)
+
+        self.assertFalse(bot._answer_offers(offered))      # answered, play on
+        self.assertEqual(site.coin_accepts, 1)
+        self.assertEqual(bot._coin_offer_answered, 5000)
+        # the server may keep the amount for a moment: do not answer twice
+        self.assertFalse(bot._answer_offers(offered))
+        self.assertEqual(site.coin_accepts, 1)
+
+    def test_a_chat_invitation_is_declined_after_the_delay(self):
+        import time
+
+        chat = SiteState(_raw(False, 10, opponent_chat="yes"))
+        site = FakeSite([chat])
+        bot = self._bot(site)
+
+        # first sight: the bot waits (so you can accept it yourself)
+        self.assertTrue(bot._answer_offers(chat))
+        self.assertEqual(site.chat_declines, 0)
+        # after the delay it declines and keeps playing
+        bot._chat_offer_since = time.time() - bot.chat_wait - 0.1
+        self.assertTrue(bot._answer_offers(chat))
+        self.assertEqual(site.chat_declines, 1)
+        self.assertIsNone(bot._chat_offer_since)
 
 
 if __name__ == "__main__":

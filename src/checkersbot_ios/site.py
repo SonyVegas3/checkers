@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from checkersbot.site import (
+    ACCEPT_COIN_OFFER_JS,
+    DECLINE_CHAT_JS,
     FIT_VIEW_JS,
     LOBBY_STEP_JS,
     LOBBY_URL,
@@ -230,6 +232,14 @@ class WebViewSite:
     def request_rematch(self) -> str:
         """Ask for a rematch through the site's own client API."""
         return str(self._eval(f"JSON.stringify({REMATCH_JS})") or "none")
+
+    def accept_coin_offer(self) -> str:
+        """Press the site's own accept button in the bigger-stake dialog."""
+        return str(self._eval(f"JSON.stringify({ACCEPT_COIN_OFFER_JS})") or "none")
+
+    def decline_chat_offer(self) -> str:
+        """Close the chat invitation (the site itself only hides the dialog)."""
+        return str(self._eval(f"JSON.stringify({DECLINE_CHAT_JS})") or "none")
 
     def open_lobby(self) -> bool:
         """Navigate the WebView back to the lobby (leaves the finished table)."""

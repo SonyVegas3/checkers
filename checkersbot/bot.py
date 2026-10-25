@@ -64,6 +64,7 @@ class CheckersBot:
         trace_board: bool = False,
         rules: str = "joker",
         rematch_wait: float = 30.0,
+        chat_wait: float = 5.0,
         log=None,
         should_stop=None,
         lobby_walk: bool = True,
@@ -104,6 +105,10 @@ class CheckersBot:
         # how long the opponent gets to accept a rematch before the bot leaves the
         # table and looks for somebody new (the site itself waits 30 s)
         self.rematch_wait = max(1.0, float(rematch_wait))
+        # how long a chat invitation is left alone before the bot declines it
+        self.chat_wait = max(1.0, float(chat_wait))
+        self._chat_offer_since: Optional[float] = None
+        self._coin_offer_answered = 0
         # the GUI pipes every line into a text widget and can ask the loop to stop
         self._log = log
         self.should_stop = should_stop
@@ -746,11 +751,56 @@ class CheckersBot:
     # ------------------------------------------------------------------
     # after a game: rematch, or a new opponent
     # ------------------------------------------------------------------
+    def _answer_offers(self, state: SiteState) -> bool:
+        """Answer the two mid-game dialogs that would otherwise stall the game.
+
+        * **a bigger stake** (``opponent.coins > 0``): the site's dialog is *not*
+          cancelable, so nothing else can be clicked until it is answered.  The
+          bot always accepts (the stake only grows) and logs the amount.
+        * **a chat invitation** (``opponent.chat == 'yes'``): the site shows a
+          prompt that covers the board.  The bot leaves it alone for ``chat_wait``
+          seconds — so you can accept it yourself while watching — and then
+          declines it (that is a client-side close, no request is sent) and plays
+          on.
+
+        Returns True while one of them is still pending, so the caller waits
+        instead of trying to play behind a modal dialog.
+        """
+        waiting = False
+        if state.coin_offer and state.coin_offer != self._coin_offer_answered:
+            answer = str(self.site.accept_coin_offer())
+            if answer in ("", "none", "None"):
+                waiting = True
+            else:
+                self._coin_offer_answered = state.coin_offer
+                self.log(f"the opponent offers to play for "
+                         f"{state.coin_offer} coins - accepted")
+        if state.chat_offer:
+            now = time.time()
+            if self._chat_offer_since is None:
+                self._chat_offer_since = now
+                self.log(f"the opponent asks to chat - declining in "
+                         f"{self.chat_wait:.0f}s (accept it yourself to chat)")
+                waiting = True
+            elif now - self._chat_offer_since >= self.chat_wait:
+                answer = str(self.site.decline_chat_offer())
+                if answer not in ("", "none", "None"):
+                    self._chat_offer_since = None
+                    self.log("chat invitation declined - playing on")
+                waiting = True
+            else:
+                waiting = True
+        else:
+            self._chat_offer_since = None
+        return waiting
+
     def _reset_for_new_game(self) -> None:
         """Forget the previous table - a rematch can swap the colours."""
         self.history.clear()
         self.probe_map = {}
         self.failures = 0
+        self._chat_offer_since = None
+        self._coin_offer_answered = 0
         self.my_site_color = (
             None if self.requested_site_color == "auto" else self.requested_site_color
         )
@@ -846,6 +896,10 @@ class CheckersBot:
                 state = self.site.read_state()
                 if state is None:
                     time.sleep(self.poll)
+                    continue
+                if self._answer_offers(state):
+                    # a stake offer or a chat prompt is still on screen
+                    time.sleep(0.5)
                     continue
                 if state.finished:
                     if (

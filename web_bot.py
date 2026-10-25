@@ -77,6 +77,8 @@ from typing import Dict, Optional, Sequence
 from checkersbot.board import RED, square_name
 from checkersbot.bot import CheckersBot
 from checkersbot.site import (  # noqa: F401 - re-exported for the tests / CLI
+    ACCEPT_COIN_OFFER_JS,
+    DECLINE_CHAT_JS,
     FIT_VIEW_JS,
     LOBBY_URL,
     READ_STATE_JS,
@@ -432,6 +434,22 @@ class JokerGameSite:
         except PlaywrightError as error:
             self.log(f"! could not open the lobby: {error}")
             return False
+
+    def accept_coin_offer(self) -> str:
+        """Press the site's own accept button in the bigger-stake dialog."""
+        try:
+            return str(self.page.evaluate(ACCEPT_COIN_OFFER_JS) or "none")
+        except PlaywrightError as error:
+            self.log(f"  (stake offer: {error})")
+            return "none"
+
+    def decline_chat_offer(self) -> str:
+        """Close the chat invitation (the site itself only hides the dialog)."""
+        try:
+            return str(self.page.evaluate(DECLINE_CHAT_JS) or "none")
+        except PlaywrightError as error:
+            self.log(f"  (chat offer: {error})")
+            return "none"
 
     def _wait_hidden(self, selector: str, timeout_ms: int = 6000) -> bool:
         try:
@@ -888,6 +906,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rematch-wait", type=float, default=30.0,
                         help="seconds to wait for a rematch after a game (default: 30, "
                              "the site's own window)")
+    parser.add_argument("--chat-wait", type=float, default=5.0,
+                        help="seconds a chat invitation is left alone before the bot "
+                             "declines it and plays on (default: 5)")
     parser.add_argument("--max-errors", type=int, default=5, help="stop after N consecutive failures")
     parser.add_argument("--once", action="store_true", help="play a single move, then exit")
     parser.add_argument("--dry-run", action="store_true",
@@ -1030,6 +1051,7 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
                 password=args.password or os.environ.get("JOKER_PASSWORD"),
                 trace_board=args.trace_board,
                 rematch_wait=args.rematch_wait,
+                chat_wait=args.chat_wait,
                 log=log,
                 should_stop=should_stop,
                 lobby_walk=lobby_walk,
