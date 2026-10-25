@@ -30,7 +30,10 @@ from typing import Any, Callable, Dict, Optional
 
 from checkersbot.site import (
     FIT_VIEW_JS,
+    LOBBY_STEP_JS,
+    LOBBY_URL,
     READ_STATE_JS,
+    REMATCH_JS,
     SELECTORS,
     SiteError,
     SiteState,
@@ -205,9 +208,39 @@ class WebViewSite:
         return False
 
     def enter_game(self, coins: int = 0) -> bool:
-        """The app plays the table the user opened; it never walks the lobby."""
-        self.log("  (open a table in the app's browser, then press start again)")
-        return False
+        """Walk the lobby with the site's own dialogs (stake → random → play).
+
+        The caller keeps calling this: the site asks one question per dialog, so
+        each call advances one step until the table opens.
+        """
+        script = LOBBY_STEP_JS % {
+            "stake": json.dumps(SELECTORS["lobby_stake"].format(coins=coins)),
+            "random": json.dumps(SELECTORS["lobby_random"]),
+            "play": json.dumps(SELECTORS["lobby_play"]),
+        }
+        result = str(self._eval(f"JSON.stringify({script})") or "none")
+        if result == "disabled":
+            self.log(f"! stake option {coins} is disabled (not enough coins)")
+            return False
+        if result == "none":
+            return False
+        self.log(f"lobby: {result}")
+        return True
+
+    def request_rematch(self) -> str:
+        """Ask for a rematch through the site's own client API."""
+        return str(self._eval(f"JSON.stringify({REMATCH_JS})") or "none")
+
+    def open_lobby(self) -> bool:
+        """Navigate the WebView back to the lobby (leaves the finished table)."""
+        try:
+            self._eval(
+                "JSON.stringify((function(){location.href=%s;return true;})())"
+                % json.dumps(LOBBY_URL)
+            )
+        except SiteError:
+            pass                       # the navigation tears the JS context down
+        return True
 
 
 __all__ = ["WebViewSite", "POLL_SECONDS"]

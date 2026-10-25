@@ -40,6 +40,7 @@ DEFAULT_URL = "https://jokergame.cc/checkers"
 LOG_LINES = 40
 DEPTH = 9            # engine search depth (the panel's default)
 SECONDS = 5.0        # seconds per move
+STAKE = 0            # lobby stake: 0 = 50 coins (the cheapest table)
 
 
 class CheckersBotApp(toga.App):
@@ -210,8 +211,9 @@ class CheckersBotApp(toga.App):
             turn_timeout=25.0,
             # the phone layout already fits; scaling it would only shrink the board
             apply_fit=False,
-            # the user opens the table; the app never walks the lobby or logs in
-            lobby_walk=False,
+            # the app plays until it is stopped: rematch, then a new opponent
+            lobby_walk=True,
+            coins=STAKE,
             use_probe=True,
             rules="joker",
             log=self.log_line,
@@ -223,7 +225,7 @@ class CheckersBotApp(toga.App):
         )
         self._set_screen_awake(True)
         self._bot_thread.start()
-        self.log_line("ბოტი მუშაობს — ეკრანი არ ჩაქრება (დატოვე აპი გახსნილი)")
+        self.log_line("ბოტი მუშაობს — თამაშობს უწყვეტად (რემატჩი ან ახალი ოპონენტი)")
         self.status.text = "ვეძებ მაგიდას..."
 
     def _run_bot(self, bot: CheckersBot) -> None:

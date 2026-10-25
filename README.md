@@ -230,24 +230,21 @@ Notes from getting this green in CI:
 
 ### Use it
 
-1. Open the app, sign in on jokergame.cc inside it (the WebView keeps the
-   cookies; the app never stores a password), open a table.
-2. Press **▶ დაწყება**. The engine plays depth 9 with 5 s per move (the `DEPTH` /
-   `SECONDS` constants at the top of `src/checkersbot_ios/app.py`).
-3. The bot waits for the board, probes your stones, plays the engine's move and
-   repeats until the game ends; **■ გაჩერება** stops it after the current move.
-   The log under the board shows the same lines as the desktop bot.
+1. Open the app and sign in on jokergame.cc inside it (the WebView keeps the
+   cookies; the app never stores a password). You do **not** have to open a
+   table: the bot walks the lobby itself.
+2. Press **▶ დაწყება**. It finds an opponent at the cheapest table
+   (`STAKE = 0` → 50 coins), plays depth 9 with 5 s per move (`DEPTH` /
+   `SECONDS` in `src/checkersbot_ios/app.py`) and keeps going: when a game ends
+   it asks for a rematch, waits up to 30 s, and then leaves the table and looks
+   for a new opponent — until you press **■ გაჩერება**.
+3. The log under the board shows the same lines as the desktop bot.
 4. While the bot runs the app keeps the screen awake (`idleTimerDisabled`), so
    the game continues when nobody touches the phone. iOS suspends apps that go
    to the background, so **closing the app pauses the game** — a bot that has to
    keep playing while the phone is in your pocket needs to run on a PC/server.
-   If no table is open the app gives up after 25 s and says so instead of
-   waiting two minutes.
-
-What the app deliberately does not do: walk the lobby, pick a stake, sign in
-automatically, or take screenshots (there is no such API for an app's own
-WebView). `enter_game()` / `sign_in()` only log a hint; the HTML dump still
-works and is written to the app's `Logs` folder.
+5. Signing in stays manual (the app never stores a password) and the HTML dump
+   still works and is written to the app's `Logs` folder.
 
 ### Develop it on Windows
 
@@ -380,6 +377,8 @@ python web_bot.py --headless --max-moves 20 --poll 0.5
 | `--window-size` | auto | force the browser window, e.g. `1200x760` |
 | `--no-fit` | off | do not resize/nudge the page (keep the site's own layout) |
 | `--max-moves` | `0` (∞) | stop after N moves |
+| `--max-games` | `0` (∞) | stop after N games — the default plays on: rematch, then a new opponent |
+| `--rematch-wait` | `30` | seconds to wait for a rematch after a game (the site's own window) |
 | `--max-errors` | `5` | stop after N consecutive failures (screenshots are saved to `logs/`) |
 | `--no-probe` | off | trust the engine without asking the site (debug only) |
 | `--trace-board` | off | log the parsed board before every move |
@@ -389,6 +388,27 @@ python web_bot.py --headless --max-moves 20 --poll 0.5
 | `--discover-only-board` | off | with `--discover`: read the board but do not click stones |
 | `--close-browser` | off | close the browser when the bot stops (by default the window **stays open** on the finished game / lobby) |
 | `--once`, `--dry-run`, `--discover`, `--headless` | | modes described above |
+
+### Automatic play — game after game
+
+With the defaults (`--max-games 0`, `--max-moves 0`) the bot plays until you stop
+it:
+
+1. the lobby is walked once (**Play a game → Random people → stake**);
+2. the game is played to the end;
+3. the finish dialog offers **Rematch** for 30 s; the bot asks for it through the
+   site's own API (`init_play.rematch({opponent_id})` — the exact call the button
+   makes), so it works in any site language;
+4. if the opponent accepts, the page reloads with a new `game_id` and the bot
+   carries on (a rematch can swap the colours, so it calibrates itself again);
+5. if nobody accepts, or the site offers no rematch at all, the bot leaves the
+   table, reloads the lobby and searches a new opponent — then it is back at
+   step 2.
+
+`--rematch-wait` tunes step 3 and `--max-games` stops after N games; the panel has
+the same two fields (`მაქს. თამაში`, `რემატჩის ლოდინი`). `■ შეჩერება` / Ctrl+C
+stops between moves. The iOS app does exactly the same with `lobby_walk=True`
+and `STAKE = 0`.
 
 ### Keeping the whole board visible
 

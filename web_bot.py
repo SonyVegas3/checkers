@@ -78,7 +78,9 @@ from checkersbot.board import RED, square_name
 from checkersbot.bot import CheckersBot
 from checkersbot.site import (  # noqa: F401 - re-exported for the tests / CLI
     FIT_VIEW_JS,
+    LOBBY_URL,
     READ_STATE_JS,
+    REMATCH_JS,
     SELECTORS,
     SiteState,
     first_landing,
@@ -413,6 +415,23 @@ class JokerGameSite:
         except PlaywrightError as error:
             self.log(f"! lobby step failed: {error}")
         return False
+
+    def request_rematch(self) -> str:
+        """Ask for a rematch exactly like the site's own finish-dialog button."""
+        try:
+            return str(self.page.evaluate(REMATCH_JS) or "none")
+        except PlaywrightError as error:
+            self.log(f"  (rematch request failed: {error})")
+            return "none"
+
+    def open_lobby(self) -> bool:
+        """Leave the finished table and go back to the checkers lobby page."""
+        try:
+            self.page.goto(LOBBY_URL, wait_until="domcontentloaded", timeout=45000)
+            return True
+        except PlaywrightError as error:
+            self.log(f"! could not open the lobby: {error}")
+            return False
 
     def _wait_hidden(self, selector: str, timeout_ms: int = 6000) -> bool:
         try:
@@ -863,6 +882,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--turn-timeout", type=float, default=120.0,
                         help="seconds to wait for the board when starting")
     parser.add_argument("--max-moves", type=int, default=0, help="stop after N moves (0 = unlimited)")
+    parser.add_argument("--max-games", type=int, default=0,
+                        help="stop after N games (0 = play until stopped: rematch, "
+                             "then a new opponent)")
+    parser.add_argument("--rematch-wait", type=float, default=30.0,
+                        help="seconds to wait for a rematch after a game (default: 30, "
+                             "the site's own window)")
     parser.add_argument("--max-errors", type=int, default=5, help="stop after N consecutive failures")
     parser.add_argument("--once", action="store_true", help="play a single move, then exit")
     parser.add_argument("--dry-run", action="store_true",
@@ -1004,11 +1029,13 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
                 email=args.email or os.environ.get("JOKER_EMAIL"),
                 password=args.password or os.environ.get("JOKER_PASSWORD"),
                 trace_board=args.trace_board,
+                rematch_wait=args.rematch_wait,
                 log=log,
                 should_stop=should_stop,
                 lobby_walk=lobby_walk,
             )
-            code = bot.run(max_moves=args.max_moves, once=args.once)
+            code = bot.run(max_moves=args.max_moves, once=args.once,
+                           max_games=args.max_games)
             if endpoint:
                 log("the browser stays open - 'Rematch' or the lobby are one click away "
                     "(use --close-browser if you want it closed)")

@@ -119,8 +119,17 @@ class BridgeTests(unittest.TestCase):
     def test_the_app_never_blocks_on_a_password(self) -> None:
         self.assertFalse(self.site.needs_sign_in())
         self.assertFalse(self.site.sign_in("user", "secret"))
-        self.assertFalse(self.site.enter_game(0))
         self.assertFalse(WebViewSite(lambda script: "false").has_auth_dialog())
+
+    def test_the_rematch_uses_the_site_api(self) -> None:
+        site = WebViewSite(lambda script: '"requested:42"')
+        self.assertEqual(site.request_rematch(), "requested:42")
+        site = WebViewSite(lambda script: '"none"')
+        self.assertEqual(site.request_rematch(), "none")
+
+    def test_a_disabled_stake_is_reported(self) -> None:
+        site = WebViewSite(lambda script: '"disabled"', log=lambda line: None)
+        self.assertFalse(site.enter_game(5))
 
 
 @unittest.skipUnless(HAVE_PLAYWRIGHT, "playwright is not installed")

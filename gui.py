@@ -95,6 +95,8 @@ class Settings:
     poll: float = 1.0
     turn_timeout: float = 120.0
     max_moves: int = 0
+    max_games: int = 0
+    rematch_wait: float = 30.0
     channel: str = ""
     window_size: str = ""
     headless: bool = False
@@ -171,6 +173,9 @@ class Settings:
             argv += ["--window-size", self.window_size]
         if self.max_moves:
             argv += ["--max-moves", str(int(self.max_moves))]
+        if self.max_games:
+            argv += ["--max-games", str(int(self.max_games))]
+        argv += ["--rematch-wait", str(float(self.rematch_wait))]
         for flag, enabled in (
             ("--headless", self.headless),
             ("--close-browser", self.close_browser),
@@ -337,6 +342,18 @@ class BotWindow:
         ttk.Spinbox(engine, from_=0, to=999, width=5, textvariable=self.maxmoves_var).grid(
             row=0, column=7, sticky="w", padx=(6, 0))
 
+        ttk.Label(engine, text="მაქს. თამაში:").grid(row=0, column=8, sticky="w",
+                                                    padx=(16, 0))
+        self.maxgames_var = tk.StringVar()
+        ttk.Spinbox(engine, from_=0, to=999, width=5,
+                    textvariable=self.maxgames_var).grid(row=0, column=9, sticky="w",
+                                                         padx=(6, 16))
+        ttk.Label(engine, text="რემატჩის ლოდინი (წმ):").grid(row=0, column=10, sticky="w")
+        self.rematch_var = tk.StringVar()
+        ttk.Spinbox(engine, from_=2, to=120, increment=5, width=5,
+                    textvariable=self.rematch_var).grid(row=0, column=11, sticky="w",
+                                                        padx=(6, 0))
+
         # The board rules are fixed: the bot always plays the jokergame.cc rule
         # set (Brazilian rules + a man crowned mid-capture keeps capturing), so
         # there is nothing to choose here.
@@ -411,6 +428,8 @@ class BotWindow:
         self.time_var.set(str(s.time))
         self.poll_var.set(str(s.poll))
         self.maxmoves_var.set(str(s.max_moves))
+        self.maxgames_var.set(str(s.max_games))
+        self.rematch_var.set(str(int(s.rematch_wait)))
         self.headless_var.set(bool(s.headless))
         self.closebrowser_var.set(bool(s.close_browser))
         self.trace_var.set(bool(s.trace_board))
@@ -434,6 +453,8 @@ class BotWindow:
         s.time = max(0.0, self._as_float(self.time_var.get(), 5.0))
         s.poll = max(0.1, self._as_float(self.poll_var.get(), 1.0))
         s.max_moves = max(0, self._as_int(self.maxmoves_var.get(), 0))
+        s.max_games = max(0, self._as_int(self.maxgames_var.get(), 0))
+        s.rematch_wait = max(2.0, self._as_float(self.rematch_var.get(), 30.0))
         s.headless = bool(self.headless_var.get())
         s.close_browser = bool(self.closebrowser_var.get())
         s.trace_board = bool(self.trace_var.get())

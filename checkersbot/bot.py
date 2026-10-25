@@ -63,6 +63,7 @@ class CheckersBot:
         password: Optional[str] = None,
         trace_board: bool = False,
         rules: str = "joker",
+        rematch_wait: float = 30.0,
         log=None,
         should_stop=None,
         lobby_walk: bool = True,
@@ -76,6 +77,7 @@ class CheckersBot:
 
         self.site = site
         self.requested_site_color = site_color
+        self.requested_side = side
         self.my_site_color: Optional[str] = None if site_color == "auto" else site_color
         self.my_engine_color: Optional[int] = None
         if side == "red":
@@ -99,6 +101,9 @@ class CheckersBot:
         self._signed_in = False
         self.trace_board = trace_board
         self.rules = rules
+        # how long the opponent gets to accept a rematch before the bot leaves the
+        # table and looks for somebody new (the site itself waits 30 s)
+        self.rematch_wait = max(1.0, float(rematch_wait))
         # the GUI pipes every line into a text widget and can ask the loop to stop
         self._log = log
         self.should_stop = should_stop
@@ -111,6 +116,7 @@ class CheckersBot:
 
         self.history: List[object] = []
         self.moves_played = 0
+        self.games_played = 0
         self.failures = 0
         self._last_wait_log = 0.0
 
@@ -737,7 +743,87 @@ class CheckersBot:
             f"{'everything fits' if info.get('fits') else 'still overflowing'}"
         )
 
-    def run(self, max_moves: int = 0, once: bool = False) -> int:
+    # ------------------------------------------------------------------
+    # after a game: rematch, or a new opponent
+    # ------------------------------------------------------------------
+    def _reset_for_new_game(self) -> None:
+        """Forget the previous table - a rematch can swap the colours."""
+        self.history.clear()
+        self.probe_map = {}
+        self.failures = 0
+        self.my_site_color = (
+            None if self.requested_site_color == "auto" else self.requested_site_color
+        )
+        if self.requested_side == "red":
+            self.my_engine_color = RED
+        elif self.requested_side == "black":
+            self.my_engine_color = BLACK
+        else:
+            self.my_engine_color = None
+        self.calibrated = self.my_engine_color is not None
+
+    def _next_game(self, state: SiteState) -> bool:
+        """Try a rematch; if nobody wants one, leave and find a new opponent.
+
+        The site's own finish dialog offers "Rematch" for 30 s (it POSTs
+        ``act=rematch_request`` and then waits); on acceptance it reloads the page
+        with a new ``game_id``, and on refusal it drops back to the lobby.  The
+        bot does the same thing: ask once, wait, then walk the lobby again.
+        """
+        self.games_played += 1
+        self.log(
+            f"game {self.games_played} is over - waiting up to "
+            f"{int(self.rematch_wait)}s for a rematch"
+        )
+        request_sent = False
+        fresh_reads = 0
+        deadline = time.time() + self.rematch_wait
+        while time.time() < deadline:
+            if self._stop_requested():
+                return False
+            current = self.site.read_state()
+            # ``status`` stays "finish" while the site shows its dialogs, so the
+            # board only looks unfinished once the server really started a new
+            # game - requiring two reads keeps a flicker from counting
+            if current is not None and not current.finished:
+                fresh_reads += 1
+                if fresh_reads >= 2:
+                    self._reset_for_new_game()
+                    self.log("a new game started - playing on")
+                    return True
+            else:
+                fresh_reads = 0
+            if not request_sent:
+                answer = str(self.site.request_rematch())
+                request_sent = answer not in ("", "none", "None")
+                if request_sent:
+                    self.log(f"rematch requested ({answer})")
+                else:
+                    self.log("the site offers no rematch - the opponent left")
+                    break
+            time.sleep(0.5)
+
+        self._reset_for_new_game()
+        if not self.lobby_walk:
+            self.log("lobby walking is off - stopping after this game")
+            return False
+
+        self.log("leaving the table and looking for a new opponent")
+        self.site.open_lobby()
+        time.sleep(2.0)
+        for _ in range(8):
+            if self._stop_requested():
+                return False
+            if self.site.enter_game(self.coins):
+                if self.site.wait_for_board(timeout_ms=30000):
+                    self._after_board()
+                    self.log("new table found - playing")
+                    return True
+            time.sleep(2.0)
+        self.log("! no new table was found")
+        return False
+
+    def run(self, max_moves: int = 0, once: bool = False, max_games: int = 0) -> int:
         if not self._open_board():
             self.log("! the checkers board never appeared. Open a table in the browser "
                      "(or use --url / --cdp) and try again.")
@@ -755,8 +841,17 @@ class CheckersBot:
                     time.sleep(self.poll)
                     continue
                 if state.finished:
-                    self.log("the game is over - stopping")
-                    break
+                    if (
+                        once
+                        or (max_moves and self.moves_played >= max_moves)
+                        or (max_games and self.games_played >= max_games)
+                    ):
+                        self.log("the game is over - stopping")
+                        break
+                    if not self._next_game(state):
+                        self.log("! could not start another game - stopping")
+                        return 0
+                    continue
                 if not state.my_turn:
                     self._log_waiting(state)
                     time.sleep(self.poll)
@@ -788,5 +883,6 @@ class CheckersBot:
                     return 1
                 time.sleep(min(10.0, self.poll * 2))
 
-        self.log(f"finished - {self.moves_played} move(s) played")
+        self.log(f"finished - {self.moves_played} move(s) in "
+                 f"{self.games_played} game(s)")
         return 0

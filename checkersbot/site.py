@@ -42,6 +42,67 @@ SELECTORS = {
 
 SITE_COLORS = ("white", "black")
 
+#: the checkers lobby page (a finished table leaves us back here)
+LOBBY_URL = "https://jokergame.cc/checkers"
+
+#: Ask for a rematch / accept the opponent's request, using the site's own API.
+#:
+#: The client's finish dialog is built from ``game_data.finish.rematch`` (the
+#: opponent id) and its "Rematch" button calls exactly this function, so calling
+#: it has the same effect as a click - without depending on the page language.
+REMATCH_JS = r"""
+(function () {
+  var data = (window.init_game && window.init_game.game_data) || null;
+  var finish = (data && data.finish) || null;
+  var opponent = (finish && finish.rematch) ? String(finish.rematch) : '';
+  if (!opponent && typeof init_users === 'object' && init_users && init_users.rematch_opponent) {
+    opponent = String(init_users.rematch_opponent);      // an incoming request
+  }
+  if (opponent && typeof init_play === 'object' && init_play &&
+      typeof init_play.rematch === 'function') {
+    init_play.rematch({ 'opponent_id': opponent });
+    return 'requested:' + opponent;
+  }
+  // last resort: click the site's own "Rematch" button by its translated label
+  var label = 'Rematch';
+  if (typeof lang === 'object' && lang && typeof lang.text === 'function') {
+    try { label = String(lang.text(124)); } catch (error) { label = 'Rematch'; }
+  }
+  var buttons = document.querySelectorAll(
+      '.game-finish-dialog .big-dialog-footer .big-dialog-button');
+  for (var index = 0; index < buttons.length; index += 1) {
+    if ((buttons[index].textContent || '').trim() === label.trim()) {
+      buttons[index].click();
+      return 'clicked';
+    }
+  }
+  return 'none';
+})()
+"""
+
+#: Walk one step of the lobby: stake dialog -> "Random people" -> "Play a game".
+LOBBY_STEP_JS = r"""
+(function () {
+  var stake = document.querySelector(%(stake)s);
+  if (stake) {
+    if (stake.getAttribute('item-disabled') === 'yes') return 'disabled';
+    stake.click();
+    return 'stake';
+  }
+  var random = document.querySelector(%(random)s);
+  if (random) {
+    random.click();
+    return 'random';
+  }
+  var play = document.querySelector(%(play)s);
+  if (play) {
+    play.click();
+    return 'play';
+  }
+  return 'none';
+})()
+"""
+
 
 def square_from_xy(x: int, y: int) -> int:
     """Site coordinates (1-based, origin top-left) -> engine square index."""
@@ -423,3 +484,13 @@ class Site(Protocol):
 
     def enter_game(self, coins: int = 0) -> bool:
         """Walk the lobby and open a table with the given stake."""
+
+    def request_rematch(self) -> str:
+        """Ask for a rematch (or accept the opponent's), like the site's button.
+
+        Returns ``"requested:<id>"`` / ``"clicked"`` when a request went out and
+        ``"none"`` when the site offers no rematch (the opponent already left).
+        """
+
+    def open_lobby(self) -> bool:
+        """Navigate back to the checkers lobby page (leaves the finished table)."""
