@@ -41,4 +41,9 @@ Thumbs.db
 .backup/
 briefcase-out.txt
 selfplay.txt
+build-exe.txt
+build-new.txt
+scan.txt
+h.txt
+chk.txt
 
