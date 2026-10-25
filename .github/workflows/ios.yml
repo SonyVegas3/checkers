@@ -22,8 +22,10 @@ permissions:
 
 jobs:
   ipa:
-    # macos-15 ships Xcode 16; switch to macos-26 if GitHub retires this image.
-    runs-on: macos-15
+    # Briefcase 0.4.6 requires Xcode 26, so the runner must be a macOS 26 image
+    # (macos-15 only ships Xcode 16 and the build stops with "Xcode 26.0 is
+    # required; 16.4 is installed").
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
