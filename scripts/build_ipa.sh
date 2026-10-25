@@ -5,7 +5,8 @@
 # to make a distributable IPA ("iOS apps must be published through Xcode"), so
 # this script does the last step by hand:
 #
-#   1. briefcase create iOS      -> iOS/Xcode/CheckersBot/CheckersBot.xcodeproj
+#   1. briefcase create iOS      -> build/checkersbot_ios/ios/xcode/CheckersBot.xcodeproj
+#                                   (0.4.x layout; older Briefcase used iOS/Xcode/<App>)
 #   2. briefcase build iOS       -> simulator build (proves the app compiles and
 #                                   installs the Python requirements)
 #   3. xcodebuild -sdk iphoneos  -> the same project for a real device, with code
@@ -45,9 +46,12 @@ say "Installing requirements + simulator build"
 briefcase build iOS --no-input
 
 say "Locating the Xcode project"
-PROJECT="$(find iOS -maxdepth 4 -type d -name '*.xcodeproj' | head -n 1)"
+# Briefcase's layout moved to build/<app>/ios/xcode in 0.4.x, older versions used
+# iOS/Xcode/<App> - just search for the project instead of assuming a path.
+PROJECT="$(find . -maxdepth 8 -type d -name '*.xcodeproj' -not -path './.git/*' | head -n 1)"
 if [ -z "$PROJECT" ]; then
-  echo "! no .xcodeproj under iOS/ - briefcase create iOS did not finish" >&2
+  echo "! no .xcodeproj found - briefcase create iOS did not finish" >&2
+  find . -maxdepth 4 -type d -not -path './.git*' | sort | head -n 60 >&2
   exit 1
 fi
 echo "project: $PROJECT"
