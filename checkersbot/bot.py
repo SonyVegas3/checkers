@@ -68,6 +68,7 @@ class CheckersBot:
         rematch_wait: float = 30.0,
         chat_wait: float = 5.0,
         accept_stake: bool = False,
+        should_accept_stake=None,
         think_delays: Sequence[float] = (2.0, 3.0, 5.0, 7.0),
         quick_delays: Sequence[float] = (1.0, 2.0, 3.0),
         obvious_gap: int = 150,
@@ -118,6 +119,9 @@ class CheckersBot:
         #: does the bot agree when the opponent raises the stake?  Off by default
         #: (a raise costs coins), the panel checkbox / ``--accept-stake`` turns it on
         self.accept_stake = bool(accept_stake)
+        #: polled like ``should_lose``, so the checkbox can be ticked *while* the
+        #: bot plays and the next offer already follows the new setting
+        self.should_accept_stake = should_accept_stake
         # human-like pacing: the first move of a game is quick, the rest waits one
         # of these times ("thinking"), so the bot does not play like a machine.
         # ``quick_delays`` is used when the position was easy (a forced capture,
@@ -175,6 +179,15 @@ class CheckersBot:
     def _lose_requested(self) -> bool:
         """Has the user asked the bot to lose this game on purpose?"""
         return bool(self.should_lose is not None and self.should_lose())
+
+    def _accept_stake_now(self) -> bool:
+        """Should the next bigger-stake offer be accepted (live from the switch)?"""
+        if self.should_accept_stake is not None:
+            try:
+                return bool(self.should_accept_stake())
+            except Exception:                     # a dead widget must not stop us
+                return self.accept_stake
+        return self.accept_stake
 
     #: how far (in evaluation units - a man is 100) a "losing on purpose" move may
     #: fall behind the best one.  About three quarters of a man is what an average
@@ -884,7 +897,7 @@ class CheckersBot:
             self._draw_offer_tries = 0
 
         if state.coin_offer and state.coin_offer != self._coin_offer_answered:
-            if not self.accept_stake:
+            if not self._accept_stake_now():
                 # a raise costs coins: unless the user asked for it, the offer is
                 # turned down (the site closes it by itself after ~10 s, so the
                 # bot waits it out and keeps playing)

@@ -247,6 +247,19 @@ class AutoLoopTests(unittest.TestCase):
         self.assertFalse(bot._answer_offers(offered))
         self.assertEqual(site.coin_accepts, 1)
 
+    def test_a_live_stake_switch_is_read_before_every_offer(self):
+        # the panel checkbox / iOS switch is polled, so ticking it mid-game works
+        offered = SiteState(_raw(False, 10, opponent_coins=5000))
+        site = FakeSite([offered])
+        enabled = [False]
+        bot = self._bot(site, should_accept_stake=lambda: enabled[0])
+        bot._answer_offers(offered)
+        self.assertEqual(site.coin_declines, 1)
+        enabled[0] = True                                  # the switch is flipped on
+        bot._coin_offer_answered = 0
+        bot._answer_offers(offered)
+        self.assertEqual(site.coin_accepts, 1)
+
     def test_a_chat_invitation_is_declined_after_the_delay(self):
         chat = SiteState(_raw(False, 10, opponent_chat="yes"))
         site = FakeSite([chat])

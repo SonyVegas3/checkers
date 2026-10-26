@@ -240,8 +240,10 @@ Notes from getting this green in CI:
    it asks for a rematch, waits up to 30 s, and then leaves the table and looks
    for a new opponent — until you press **■ გაჩერება**.  **😞 მარცხი** makes it
    lose the current game with average-player moves — nothing is handed over for
-   free (see "Losing on purpose").  **💰 ფსონის გაზრდა** (the switch next to the
-   buttons) lets it accept a raised stake — off by default, so a raise is refused.
+   free (see "Losing on purpose").  **💰 ფსონის გაზრდაზე დათანხმება** is the switch on
+   its own row under the buttons (the buttons alone fill a phone's width) — it lets
+   the bot accept a raised stake, is **off by default** (a raise is then refused),
+   and it is read before every offer, so flipping it mid-game works.
 3. The log under the board shows the same lines as the desktop bot.
 4. While the bot runs the app keeps the screen awake (`idleTimerDisabled`), so
    the game continues when nobody touches the phone. iOS suspends apps that go
@@ -466,9 +468,11 @@ and the clock keeps running behind them:
   stays as it is`) and otherwise lets the offer expire, then plays on. Tick
   **💰 ფსონის გაზრდაზე დათანხმება** in the panel - or the same switch in the iOS
   app, or `--accept-stake` on the CLI - and it agrees instead
-  (`... - accepted (clicked)`); either way it is polled during the "thinking"
-  pause **and while the engine searches** (the search runs in a worker thread, so
-  a mid-search offer is never missed) and answered exactly once;
+  (`... - accepted (clicked)`); either way the switch is **polled before every
+  offer**, so ticking it while the bot plays already applies to the next raise, and
+  the page is polled during the "thinking" pause **and while the engine searches**
+  (the search runs in a worker thread, so a mid-search offer is never missed) and
+  answered exactly once;
 * **the opponent wants to chat** — `game_data.opponent.chat == 'yes'` shows a
   prompt that covers the board. The bot leaves it alone for `--chat-wait`
   seconds, so you can accept it yourself while watching, and then declines it

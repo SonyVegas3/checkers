@@ -623,6 +623,7 @@ class BotWindow:
             args = parse_settings_argv(settings)
             args.should_stop = self.stop_event.is_set
             args.should_lose = self.lose_var.get
+            args.should_accept_stake = self.accept_stake_var.get
             code = run_bot(args, log=self.log_line)
         except SystemExit as error:                  # argparse validation
             code = int(error.code or 0)

@@ -1117,6 +1117,7 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
                 rematch_wait=args.rematch_wait,
                 chat_wait=args.chat_wait,
                 accept_stake=args.accept_stake,
+                should_accept_stake=getattr(args, "should_accept_stake", None),
                 think_delays=think_delays,
                 quick_delays=quick_delays,
                 log=log,

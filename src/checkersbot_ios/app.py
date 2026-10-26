@@ -75,20 +75,23 @@ class CheckersBotApp(toga.App):
 
     def _build_ui(self) -> Any:
         self.start_button = toga.Button(
-            "▶ დაწყება", on_press=self.on_start, style=Pack(width=130, margin=6)
+            "▶ დაწყება", on_press=self.on_start, style=Pack(width=110, margin=4)
         )
         self.reload_button = toga.Button(
-            "↻ განახლება", on_press=self.on_reload, style=Pack(width=120, margin=6)
+            "↻ განახლება", on_press=self.on_reload, style=Pack(width=110, margin=4)
         )
         self.lose_button = toga.Button(
-            "😞 მარცხი", on_press=self.on_lose, style=Pack(width=100, margin=6)
+            "😞 მარცხი", on_press=self.on_lose, style=Pack(width=95, margin=4)
         )
-        # a switch, not a button: it stays on until it is switched off again
-        self.stake_label = toga.Label(
-            "💰 ფსონის გაზრდა", style=Pack(margin=(6, 0, 0, 10))
-        )
+        # The stake switch gets a row of its own: the three buttons already fill
+        # the width of a phone, so a switch next to them was pushed off the screen
+        # and could not be tapped.  Its text lives *inside* the switch, so the
+        # whole row is the tap target.
         self.stake_switch = toga.Switch(
-            "", on_change=self.on_stake_toggle, style=Pack(margin=(6, 6, 0, 0))
+            "💰 ფსონის გაზრდაზე დათანხმება",
+            value=bool(self._accept_stake),
+            on_change=self.on_stake_toggle,
+            style=Pack(margin=(8, 8, 2, 8)),
         )
         self.status = toga.Label(
             "CheckersBot 2.0 — იტვირთება...", style=Pack(margin=(6, 6, 0, 6))
@@ -101,12 +104,15 @@ class CheckersBotApp(toga.App):
 
         buttons = toga.Box(
             style=Pack(direction=ROW),
-            children=[self.start_button, self.lose_button, self.reload_button,
-                      self.stake_label, self.stake_switch],
+            children=[self.start_button, self.lose_button, self.reload_button],
+        )
+        toggles = toga.Box(
+            style=Pack(direction=ROW),
+            children=[self.stake_switch],
         )
         root = toga.Box(
             style=Pack(direction=COLUMN, flex=1, background_color="#101418"),
-            children=[self.status, buttons, self.webview, self.log_view],
+            children=[self.status, buttons, toggles, self.webview, self.log_view],
         )
         self.log_line("აპი გაშვებულია — გახსენი მაგიდა და დააჭირე „დაწყებას“")
         return root
@@ -239,6 +245,8 @@ class CheckersBotApp(toga.App):
             use_probe=True,
             rules="joker",
             accept_stake=self._accept_stake,
+            # the switch is read before every offer, so it can be flipped mid-game
+            should_accept_stake=lambda: self._accept_stake,
             log=self.log_line,
             should_stop=self._stop.is_set,
             should_lose=lambda: self._lose_flag,
@@ -251,6 +259,10 @@ class CheckersBotApp(toga.App):
         self._set_screen_awake(True)
         self._bot_thread.start()
         self.log_line("ბოტი მუშაობს — თამაშობს უწყვეტად (რემატჩი ან ახალი ოპონენტი)")
+        self.log_line(
+            "💰 ფსონის გაზრდაზე დათანხმება: "
+            + ("ჩართულია" if self._accept_stake else "გამორთულია (უარს იტყვის)")
+        )
         self.status.text = "ვეძებ მაგიდას..."
 
     def _run_bot(self, bot: CheckersBot) -> None:
@@ -282,13 +294,20 @@ class CheckersBotApp(toga.App):
 
     def on_stake_toggle(self, widget, **kwargs) -> None:
         """Agree to a bigger stake only while this switch is on."""
-        self._accept_stake = bool(getattr(widget, "value", False))
-        if self._bot_thread is not None and self._bot_thread.is_alive():
-            self._bot.accept_stake = self._accept_stake
+        value = getattr(widget, "value", None)
+        if value is None:
+            value = kwargs.get("value")
+        if value is None:
+            value = getattr(getattr(self, "stake_switch", None), "value", False)
+        self._accept_stake = bool(value)
+        # the bot may already be running: it reads the flag before every offer
+        bot = self._bot
+        if bot is not None:
+            bot.accept_stake = self._accept_stake
         if self._accept_stake:
-            self.log_line("💰 ფსონის გაზრდაზე დათანხმება ჩართულია")
+            self.log_line("💰 ფსონის გაზრდაზე დათანხმება: ჩართულია (დაეთანხმება)")
         else:
-            self.log_line("💰 ფსონის გაზრდაზე დათანხმება გამორთულია (უარს იტყვის)")
+            self.log_line("💰 ფსონის გაზრდაზე დათანხმება: გამორთულია (უარს იტყვის)")
 
     async def on_reload(self, widget, **kwargs) -> None:
         try:
