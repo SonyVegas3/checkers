@@ -329,6 +329,17 @@ clicks, engine trusted blindly) — useful only for debugging. `--diagnose` prin
 the site's offers next to our own move generator for every stone of the current
 position, which is how the flying-king rules were confirmed.
 
+**Every capture is logged with its length**: `our move: c3xh8   [... | capture 2
+of 2]`. The site forces the *longest* capture (`maximum_capture`), so a shorter
+one is not even legal — the pair of numbers shows what the engine believed, which
+is exactly what is needed when the site seems to allow "one more piece". After a
+capture the bot also compares the site's stone count with the count its own move
+predicted: if the site kept a piece the model thought was taken (a chain that
+ended differently), it logs `! the site holds N stones after …, M were expected`
+and saves `logs/post-move-mismatch-*.html/.png` once, so the position can be
+reproduced. Tick **„დაფის ტრეისი ლოგში"** (`--trace-board`) to print the whole
+board before every move — the fastest way to report a position that looks wrong.
+
 ### 1. Sign in once (the profile keeps the session)
 
 ```powershell
@@ -726,13 +737,16 @@ Evaluation (`ai.evaluate`, centipawns, from red's point of view):
   control, edge squares (impossible to jump over, therefore safe), home row
   defence for men, centre for kings (black tables are 180 degree mirrors);
 * mobility - empty diagonal steps, weight 1;
-* **back-row defence** (`BACK_ROW_WEIGHT = 16`, scaled by the opponent's men) -
-  a man left on our own back row stops the enemy from crowning, so the engine no
-  longer walks its defence away and loses a promotion race.
+* ~~back-row defence~~ (`BACK_ROW_WEIGHT`) - a man left on our own back row was
+  worth extra, but a measured match showed **45.8 %** against the same engine
+  without it, and it made the bot keep men at home (passive play that looked
+  "illogical"), so it ships **switched off**; the code stays as a knob for the
+  match runner.
 
-Keeping the positional terms small matters: with large piece-square bonuses the
+Deliberately small positional terms matter: with large piece-square bonuses the
 engine starts chasing space and loses material, with small ones it plays solid
-tactical checkers and converts its material advantage.
+tactical checkers and converts its material advantage — material, advancement and
+mobility are what the "logical" play comes from.
 
 ### Making it stronger
 
@@ -745,7 +759,7 @@ strength:
 | think time | `წამი/სვლა` (**12 s**) | `--time 12` | `SECONDS = 12.0` |
 | depth cap | `სიღრმე` (**18**) | `--depth 18` | `DEPTH = 18` |
 
-* 12 s with the depth cap at 18 reaches **depth 12 in the opening** (391k nodes)
+* 12 s with the depth cap at 18 reaches **depth 13 in the opening** (630k nodes)
   and 13-18 plies in the endgame - the cap almost never binds, the clock does;
 * the human "thinking" pause is **skipped when the search itself took 6 s or
   more** (`--think-delays`), so a strong move costs ~12-13 s, not 12 + 7;
@@ -781,7 +795,7 @@ Single core, CPython 3.10, `scripts/bench`-style runs on the opening position:
 
 | Position | Depth reached | Nodes | Time |
 | --- | --- | --- | --- |
-| opening, 2 s budget | 10 plies | 72,704 | 2.0 s |
+| opening, 12 s budget | 13 plies | 629,760 | 12.0 s |
 | opening, fixed depth 8 | 8 plies | 16,061 | 0.29 s (~55k nodes/s) |
 | endgame (8 pieces), 10 depth cap | 13-15 plies | ~400k | 6-15 s |
 
@@ -790,10 +804,11 @@ Strength checks (all with a 0.2 s budget per move):
 * beats a 1-ply greedy opponent as RED in 45 plies and as BLACK in 58 plies;
 * an engine-vs-engine game at depth 6 / 0.2 s is decided in 163 plies (~26 s)
   instead of shuffling into a draw;
-* **`scripts/engine_match.py` vs the previous release** (back-row evaluation and
-  the faster move generator against the engine that shipped before it, swapped
-  colours, random 4-ply openings, 0.15 s per move): **5 W / 0 L / 9 D = 67.9 %**
-  of the points over 14 games - the new evaluation is stronger, not just newer.
+* **`scripts/engine_match.py` vs the previous release** (faster move generator and
+  rule flags against the engine that shipped before it, swapped colours, random
+  4-ply openings, 0.15 s per move): **5 W / 0 L / 9 D = 67.9 %** over 14 games;
+* the back-row evaluation term, measured the same way: **45.8 %** (1 W / 2 L /
+  9 D) - it did not help, so it is switched off (see above).
 
 ## Tests
 

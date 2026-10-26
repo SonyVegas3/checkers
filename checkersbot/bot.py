@@ -545,7 +545,14 @@ class CheckersBot:
                          f"{square_name(move.from_square)} (it offers: {self._names(offers)})")
                 return self._recover_with_site_moves(state)
 
-        self.log(f"our move: {move.notation()}   [{self.ai.stats}]")
+        longest = max((candidate.captured_count for candidate in legal), default=0)
+        if move.captured:
+            # the site forces the longest capture, so a shorter one is not even
+            # legal - logging both numbers makes that visible in the log
+            self.log(f"our move: {move.notation()}   [{self.ai.stats}]"
+                     f"  capture {move.captured_count} of {longest}")
+        else:
+            self.log(f"our move: {move.notation()}   [{self.ai.stats}]")
         if self.dry_run:
             self.log("dry run - no clicks were sent")
             return move
@@ -555,10 +562,31 @@ class CheckersBot:
                 self._save_debug("move-rejected")
             return None
 
+        self._check_site_result(state, move)
         self.failures = 0
         self.moves_played += 1
         self.moves_in_game += 1
         return move
+
+    def _check_site_result(self, before: SiteState, move: Move) -> None:
+        """Did the site remove the pieces our move expected?
+
+        Both numbers come from the site itself (the stone list we played from and
+        the one after the move), so a difference can only mean that the site's
+        move differed from ours - e.g. it ended a jump chain earlier.  The page is
+        saved and the log says so instead of playing on with a wrong picture.
+        """
+        expected = len(before.stones) - len(move.captured)
+        state = self.site.read_state()
+        if state is None or state.finished:
+            return
+        actual = len(state.stones)
+        if actual > expected:
+            # the site kept a piece we thought was captured: the chain we played
+            # is not the chain the site accepted
+            self.log(f"! the site holds {actual} stones after {move.notation()}, "
+                     f"{expected} were expected - saving the page")
+            self._save_debug("post-move-mismatch")
 
     def _recover_with_site_moves(self, state: SiteState) -> Optional[Move]:
         """Our move was not offered: re-probe everything and play a site-legal move."""

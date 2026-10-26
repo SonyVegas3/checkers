@@ -51,11 +51,13 @@ MAN_VALUE = 100
 KING_VALUE = 180
 MOBILITY_WEIGHT = 1
 
-#: A man on our own back row stops the enemy from crowning; it is worth extra
-#: while the opponent still has men that could promote (a classic checker term -
-#: without it the engine happily walks its defence away and loses to a
-#: promotion race).  The bonus is scaled by the opponent's man count below.
-BACK_ROW_WEIGHT = 16
+#: Back-row defence (a man on our own back row is worth extra while the opponent
+#: still has men).  Measured with ``scripts/engine_match.py``: 45.8 % against the
+#: same engine without the term over 12 games, i.e. it does **not** help - and it
+#: made the bot keep its men at home instead of playing, which looked passive.
+#: The term stays as a knob (``--set-a BACK_ROW_WEIGHT=16`` in the match runner),
+#: switched off by default.
+BACK_ROW_WEIGHT = 0
 
 #: With a material advantage, every exchange brings the win closer; when behind,
 #: keeping the pieces on the board is the defender's best hope.  The term adds
@@ -154,9 +156,12 @@ def evaluate(board: Board) -> int:
                     black_mobility += 1
 
     score += (red_mobility - black_mobility) * MOBILITY_WEIGHT
-    # back-row defence, scaled by the opponent's men (nothing to defend against
-    # once they are all gone)
-    score += (red_back * black_men - black_back * red_men) * BACK_ROW_WEIGHT // 12
+    # Back-row defence, scaled by the opponent's men (nothing to defend against
+    # once they are all gone).  Only the first two men are counted: that is the
+    # classic "bridge" - paying for every man left at home makes the engine
+    # passive, which is exactly what it looked like before this cap.
+    score += (min(red_back, 2) * black_men - min(black_back, 2) * red_men) \
+        * BACK_ROW_WEIGHT // 12
     if TRADE_WEIGHT:
         # ahead: fewer pieces is better (fewer chances to go wrong); behind: the
         # other way round.  32 squares are playable, so this counts the empty ones.
