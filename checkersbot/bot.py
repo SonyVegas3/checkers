@@ -71,6 +71,7 @@ class CheckersBot:
         think_delays: Sequence[float] = (2.0, 3.0, 5.0, 7.0),
         quick_delays: Sequence[float] = (1.0, 2.0, 3.0),
         obvious_gap: int = 150,
+        long_search: float = 6.0,
         log=None,
         should_stop=None,
         should_lose=None,
@@ -125,6 +126,9 @@ class CheckersBot:
         self.quick_delays = tuple(float(delay) for delay in (quick_delays or ()))
         #: a move this much better than the runner-up (1.5 men) counts as obvious
         self.obvious_gap = max(0, int(obvious_gap))
+        #: when the engine itself searched this long, the extra "thinking" pause is
+        #: skipped - 12 s of search plus 7 s of waiting would look like a hang
+        self.long_search = max(0.0, float(long_search))
         self._thought_step: Optional[object] = None
         self.moves_in_game = 0
         # a search that has run this long without a table is cancelled and retried
@@ -1005,6 +1009,10 @@ class CheckersBot:
         moves that really need thinking.
         """
         if not self.think_delays and not self.quick_delays:
+            return
+        searched = float(getattr(getattr(self.ai, "stats", None), "elapsed", 0.0) or 0.0)
+        if self.long_search and searched >= self.long_search:
+            self.log(f"(the search took {searched:.1f}s - no extra pause)")
             return
         if self.moves_in_game == 0:
             delay = random.uniform(0.4, 1.2)

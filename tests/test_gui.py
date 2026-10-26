@@ -28,8 +28,8 @@ class SettingsTests(unittest.TestCase):
         args = parse_settings_argv(settings)
         self.assertEqual(args.coins, 0)
         self.assertTrue(args.lobby_walk)
-        self.assertEqual(Settings().depth, 9)
-        self.assertEqual(Settings().time, 5.0)
+        self.assertEqual(Settings().depth, 18)
+        self.assertEqual(Settings().time, 12.0)
 
     def test_stake_is_forwarded(self):
         for stake in (0, 1, 2, 3, 4, 5):

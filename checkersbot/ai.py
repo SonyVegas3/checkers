@@ -57,6 +57,12 @@ MOBILITY_WEIGHT = 1
 #: promotion race).  The bonus is scaled by the opponent's man count below.
 BACK_ROW_WEIGHT = 16
 
+#: With a material advantage, every exchange brings the win closer; when behind,
+#: keeping the pieces on the board is the defender's best hope.  The term adds
+#: ``TRADE_WEIGHT`` per missing piece, signed by who is ahead.  Measured with
+#: ``scripts/engine_match.py`` before it is switched on.
+TRADE_WEIGHT = 0
+
 # Bonus for a red man ``n`` rows away from its home row (row 7).  Deliberately
 # small: material has to dominate, otherwise the engine starts chasing space.
 ADVANCEMENT = (0, 1, 2, 4, 6, 9, 12, 16)
@@ -112,12 +118,14 @@ def evaluate(board: Board) -> int:
     black_mobility = 0
     red_men = black_men = 0
     red_back = black_back = 0
+    pieces_total = 0
     flying = board.flying_kings
 
     for square in PLAYABLE_SQUARES:
         piece = cells[square]
         if piece == 0:
             continue
+        pieces_total += 1
         if piece > 0:
             if piece == RED_MAN:
                 score += MAN_VALUE + RED_MAN_PST[square]
@@ -149,6 +157,14 @@ def evaluate(board: Board) -> int:
     # back-row defence, scaled by the opponent's men (nothing to defend against
     # once they are all gone)
     score += (red_back * black_men - black_back * red_men) * BACK_ROW_WEIGHT // 12
+    if TRADE_WEIGHT:
+        # ahead: fewer pieces is better (fewer chances to go wrong); behind: the
+        # other way round.  32 squares are playable, so this counts the empty ones.
+        empty = len(PLAYABLE_SQUARES) - pieces_total
+        if score > 0:
+            score += empty * TRADE_WEIGHT // 2
+        elif score < 0:
+            score -= empty * TRADE_WEIGHT // 2
     return score
 
 

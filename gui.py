@@ -90,8 +90,8 @@ class Settings:
     profile: str = ".browser-profile"
     log_dir: str = "logs"
     url: str = DEFAULT_URL
-    depth: int = 9
-    time: float = 5.0
+    depth: int = 18
+    time: float = 12.0
     poll: float = 1.0
     turn_timeout: float = 120.0
     max_moves: int = 0

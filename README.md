@@ -362,7 +362,7 @@ python web_bot.py --once              # play exactly one move and exit
 ### 4. Play
 
 ```powershell
-python web_bot.py --time 3 --depth 7                  # ~3 s per move
+python web_bot.py --time 3 --depth 9                  # 3 s per move (quick games)
 python web_bot.py --site-color white --side red       # force our colours
 python web_bot.py --headless --max-moves 20 --poll 0.5
 ```
@@ -374,7 +374,7 @@ python web_bot.py --headless --max-moves 20 --poll 0.5
 | `--cdp` | – | attach to an existing Chrome (`http://localhost:9222`) |
 | `--site-color` | `auto` | our colour on the site (`white`/`black`); auto = read the clickable stones |
 | `--side` | `auto` | our colour in the engine; auto = read the direction our men move |
-| `--depth` / `--time` | `7` / `3.0` | engine search depth / seconds per move |
+| `--depth` / `--time` | `18` / `12.0` | engine depth cap / seconds per move — **more time is straight strength** (12 s reaches ~depth 12, 391k nodes) |
 | `--poll` | `1.0` | seconds between board polls while waiting |
 | `--coins` | `0` | lobby stake: `0` = 50, `1` = 5 000, `2` = 50 000, `3` = 200 000, `4` = 1 000 000, `5` = 10 000 000 coins |
 | `--email` / `--password` | env `JOKER_EMAIL` / `JOKER_PASSWORD` | sign-in credentials (never written to disk) |
@@ -728,18 +728,26 @@ strength:
 
 | | panel field | CLI | iOS (`app.py`) |
 | --- | --- | --- | --- |
-| think time | `წამი/სვლა` (5 s) | `--time 8` | `SECONDS = 8.0` |
-| depth cap | `სიღრმე` (9) | `--depth 14` | `DEPTH = 12` |
+| think time | `წამი/სვლა` (**12 s**) | `--time 12` | `SECONDS = 12.0` |
+| depth cap | `სიღრმე` (**18**) | `--depth 18` | `DEPTH = 18` |
 
-* `--time 10 --depth 16` is about the maximum a 30 s turn clock allows with the
-  human "thinking" pause on top - roughly 2 plies deeper than the defaults;
+* 12 s with the depth cap at 18 reaches **depth 12 in the opening** (391k nodes)
+  and 13-18 plies in the endgame - the cap almost never binds, the clock does;
+* the human "thinking" pause is **skipped when the search itself took 6 s or
+  more** (`--think-delays`), so a strong move costs ~12-13 s, not 12 + 7;
+* the site's turn clock allows ~30 s, so `--time 20` or even `--time 25` is still
+  safe if you want maximum strength over speed of play;
 * endgames get up to `max_extra_depth` (6) extra plies automatically, so a
-  6-piece endgame is searched 12-16 plies deep;
-* the match runner `scripts/engine_match.py` measures any change objectively:
-  it plays two engine modules against each other with swapped colours and
-  random openings (`python scripts/engine_match.py --games 20 --seconds 0.3
-  --a checkersbot.ai --b <reference module>`), so an evaluation or search tweak
-  is only kept when it actually scores more than 50 %;
+  6-piece endgame is searched 18-24 plies deep;
+* `scripts/engine_match.py` measures any change objectively: it plays two engine
+  modules against each other with swapped colours and random openings
+  (`python scripts/engine_match.py --games 20 --seconds 0.3
+  --a checkersbot.ai --b <reference module>`, or `--set-a TRADE_WEIGHT=2` to try
+  a constant), so an evaluation or search tweak is only kept when it actually
+  scores more than 50 %. Two examples from this tuning round:
+  * back-row defence + the faster generator: **67.9 %** (5 W / 0 L / 9 D) - kept;
+  * a "trade when ahead" term (`TRADE_WEIGHT = 2`): **53.6 %** (3 W / 2 L / 9 D) -
+    too close to noise, so it ships switched **off** (the code stays as a knob);
 * what is *not* in here: opening book, endgame databases and a native (C/Cython)
   move generator. The Python move generator is ~70 % of the search time, so a
   native port is the single biggest remaining gain; the databases would make

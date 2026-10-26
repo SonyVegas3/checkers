@@ -76,8 +76,22 @@ def main(argv: Sequence[str] = None) -> int:
     parser.add_argument("--opening", type=int, default=4, help="random opening plies")
     parser.add_argument("--a", default="checkersbot.ai", help="challenger module")
     parser.add_argument("--b", default="checkersbot.ai", help="baseline module")
+    parser.add_argument("--set-a", action="append", default=[], metavar="NAME=VALUE",
+                        help="patch a module constant for the challenger "
+                             "(e.g. --set-a TRADE_WEIGHT=2)")
+    parser.add_argument("--set-b", action="append", default=[], metavar="NAME=VALUE",
+                        help="patch a module constant for the baseline")
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args(argv)
+
+    def _patch(module: str, assignments: Sequence[str]) -> None:
+        target = importlib.import_module(module)
+        for item in assignments:
+            name, _, raw = item.partition("=")
+            setattr(target, name.strip(), type(getattr(target, name.strip(), 0))(raw))
+
+    _patch(args.a, args.set_a)
+    _patch(args.b, args.set_b)
 
     rng = random.Random(args.seed)
     wins = losses = draws = 0

@@ -923,8 +923,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="our colour on the website")
     parser.add_argument("--side", choices=("auto", "red", "black"), default="auto",
                         help="our colour in the engine (auto = read it from the men)")
-    parser.add_argument("--depth", type=int, default=7, help="engine base search depth")
-    parser.add_argument("--time", type=float, default=3.0, help="engine seconds per move (0 = no limit)")
+    parser.add_argument("--depth", type=int, default=18,
+                        help="engine base search depth (the clock is what stops it)")
+    parser.add_argument("--time", type=float, default=12.0,
+                        help="engine seconds per move (0 = no limit) - more time is "
+                             "straight strength, the site allows ~30 s per move")
     parser.add_argument("--poll", type=float, default=1.0, help="seconds between board polls")
     parser.add_argument("--coins", type=int, default=0, choices=range(0, 6),
                         help="lobby stake: 0 = 50 coins, 1 = 5 000 … 5 = 10 000 000")
