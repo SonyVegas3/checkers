@@ -81,6 +81,7 @@ from checkersbot.site import (  # noqa: F401 - re-exported for the tests / CLI
     ACCEPT_DRAW_JS,
     CANCEL_SEARCH_JS,
     DECLINE_CHAT_JS,
+    DECLINE_COIN_OFFER_JS,
     FIT_VIEW_JS,
     LOBBY_URL,
     READ_STATE_JS,
@@ -452,6 +453,14 @@ class JokerGameSite:
             return str(self.page.evaluate(ACCEPT_DRAW_JS) or "none")
         except PlaywrightError as error:
             self.log(f"  (draw offer: {error})")
+            return "none"
+
+    def decline_coin_offer(self) -> str:
+        """Refuse the bigger stake (the site closes that offer after ~10 s)."""
+        try:
+            return str(self.page.evaluate(DECLINE_COIN_OFFER_JS) or "none")
+        except PlaywrightError as error:
+            self.log(f"  (stake decline: {error})")
             return "none"
 
     def decline_chat_offer(self) -> str:
@@ -945,6 +954,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lose", action="store_true",
                         help="lose on purpose, but only with average-player moves: "
                              "nothing is handed over for free")
+    parser.add_argument("--accept-stake", action="store_true",
+                        help="agree when the opponent raises the stake (off by "
+                             "default: a raise costs coins, the bot declines it)")
     parser.add_argument("--max-errors", type=int, default=5, help="stop after N consecutive failures")
     parser.add_argument("--once", action="store_true", help="play a single move, then exit")
     parser.add_argument("--dry-run", action="store_true",
@@ -1101,6 +1113,7 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
                 trace_board=args.trace_board,
                 rematch_wait=args.rematch_wait,
                 chat_wait=args.chat_wait,
+                accept_stake=args.accept_stake,
                 think_delays=think_delays,
                 quick_delays=quick_delays,
                 log=log,

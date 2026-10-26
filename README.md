@@ -111,7 +111,7 @@ What the panel offers:
 | **1. საიდან დაიწყოს თამაში** | `ავტორიზაცია → ლობი` (signs in with the e-mail/password, then walks the lobby), `ლობი` (the browser profile is already signed in) or `უკვე ღია დაფა` (no lobby at all — the bot only plays the table that is already open, `--no-lobby`) |
 | **2. ავტორიზაცია** | e-mail/phone + password; the password stays in memory and is **never** written to disk |
 | **3. მაგიდა და თანხა** | stake ladder exactly as the site renders it (`0` = 50, `1` = 5 000, `2` = 50 000, `3` = 200 000, `4` = 1 000 000, `5` = 10 000 000 coins), browser profile folder, browser (Playwright Chromium / installed Chrome / Edge) and log folder |
-| **4. ძრავა** | depth, seconds per move, poll interval, max moves, **max games**, **rematch wait**, **thinking times** (2,3,5,7 — the board rules are fixed to the site's `joker` set), plus headless / close-browser / board-trace / dry-run / probe toggles |
+| **4. ძრავა** | depth, seconds per move, poll interval, max moves, **max games**, **rematch wait**, **thinking times** (2,3,5,7 — the board rules are fixed to the site's `joker` set), plus headless / close-browser / board-trace / dry-run / probe / **💰 ფსონის გაზრდაზე დათანხმება** toggles |
 | **buttons** | `▶ დაწყება`, `■ შეჩერება` (cooperative, stops after the current move), `✔ წესების შემოწმება` (`--diagnose`), open log/profile folders, save settings |
 | **5. ლოგი** | live output of the bot (same lines as the CLI), mirrored to a file with `--log-file` |
 
@@ -234,12 +234,14 @@ Notes from getting this green in CI:
    cookies; the app never stores a password). You do **not** have to open a
    table: the bot walks the lobby itself.
 2. Press **▶ დაწყება**. It finds an opponent at the cheapest table
-   (`STAKE = 0` → 50 coins), plays depth 9 with 5 s per move (`DEPTH` /
-   `SECONDS` in `src/checkersbot_ios/app.py`) and keeps going: when a game ends
+   (`STAKE = 0` → 50 coins), plays **depth 12 with 8 s per move** (`DEPTH` /
+   `SECONDS` in `src/checkersbot_ios/app.py` — raise them for more strength) and
+   keeps going: when a game ends
    it asks for a rematch, waits up to 30 s, and then leaves the table and looks
    for a new opponent — until you press **■ გაჩერება**.  **😞 მარცხი** makes it
    lose the current game with average-player moves — nothing is handed over for
-   free (see "Losing on purpose").
+   free (see "Losing on purpose").  **💰 ფსონის გაზრდა** (the switch next to the
+   buttons) lets it accept a raised stake — off by default, so a raise is refused.
 3. The log under the board shows the same lines as the desktop bot.
 4. While the bot runs the app keeps the screen awake (`idleTimerDisabled`), so
    the game continues when nobody touches the phone. iOS suspends apps that go
@@ -385,6 +387,7 @@ python web_bot.py --headless --max-moves 20 --poll 0.5
 | `--think-delays` | `2,3,5,7` | human-like pauses when the position was hard: the first move of a game is quick, later moves wait one of these at random (`0` = no waiting) |
 | `--quick-delays` | `1,2,3` | the same for an obvious move (one or two choices, a forced capture, one clearly best move) |
 | `--lose` | off | play weak moves on purpose (lose the game with a believable mistake) |
+| `--accept-stake` | off | agree when the opponent raises the stake (off = the raise is declined, it costs coins) |
 | `--max-errors` | `5` | stop after N consecutive failures (screenshots are saved to `logs/`) |
 | `--no-probe` | off | trust the engine without asking the site (debug only) |
 | `--trace-board` | off | log the parsed board before every move |
@@ -457,11 +460,15 @@ and the clock keeps running behind them:
   button cannot be found (then it saves `logs/draw-offer-*.html/.png` once);
 * **the opponent offers a bigger stake** — the site sets
   `game_data.opponent.coins > 0` and shows a dialog that is **not cancelable** and
-  only lives for ~10 s. The bot answers it immediately: the page is polled during
-  the "thinking" pause **and while the engine searches** (the search runs in a
-  worker thread, so a mid-search offer is still accepted in time). It **always
-  accepts**, logs `the opponent offers to play for 5000 coins - accepted
-  (clicked)` and answers each offer exactly once;
+  only lives for ~10 s. **By default the bot refuses** (a raise costs coins): it
+  presses the dialog's reject button when there is one
+  (`the opponent offers to play for 5000 coins - declined (clicked), the stake
+  stays as it is`) and otherwise lets the offer expire, then plays on. Tick
+  **💰 ფსონის გაზრდაზე დათანხმება** in the panel - or the same switch in the iOS
+  app, or `--accept-stake` on the CLI - and it agrees instead
+  (`... - accepted (clicked)`); either way it is polled during the "thinking"
+  pause **and while the engine searches** (the search runs in a worker thread, so
+  a mid-search offer is never missed) and answered exactly once;
 * **the opponent wants to chat** — `game_data.opponent.chat == 'yes'` shows a
   prompt that covers the board. The bot leaves it alone for `--chat-wait`
   seconds, so you can accept it yourself while watching, and then declines it
@@ -693,8 +700,10 @@ the opening, because no king exists yet and men's *quiet* moves are the same).
 | Transposition table | `dict` keyed by `(tuple(cells), side)` storing depth / score / bound / best move, removes repeated work from move transpositions |
 | Iterative deepening | searches depth 1, 2, 3 ... up to a time budget and always returns the best move of the last completed iteration |
 | Dynamic depth | `CheckersAI.dynamic_depth()`: crowded boards use `max_depth`, endgames add up to `max_extra_depth` extra plies (e.g. 6 -> 12 with fewer than 7 pieces) |
-| Jump quiescence | when the depth budget runs out while the side to move is forced to jump, the search keeps following the jumps, which removes the horizon effect |
+| Jump quiescence | when the depth budget runs out while the side to move is forced to jump, the search keeps following the jumps, which removes the horizon effect (and the very last quiescence node is evaluated without generating moves at all) |
 | Move ordering | transposition move first, then captures by number of pieces, promotions and piece-square gain - this is where most of alpha-beta's speed comes from |
+| Cached rule flags | `flying_kings` / `men_capture_backwards` / `maximum_capture` are decided once per board instead of comparing rule strings in every node |
+| `ROW_OF` table | promotion checks in the move generator index a tuple instead of calling `row_of()` millions of times |
 
 Evaluation (`ai.evaluate`, centipawns, from red's point of view):
 
@@ -702,11 +711,39 @@ Evaluation (`ai.evaluate`, centipawns, from red's point of view):
 * piece-square tables - small advancement bonus towards promotion, centre
   control, edge squares (impossible to jump over, therefore safe), home row
   defence for men, centre for kings (black tables are 180 degree mirrors);
-* mobility - empty diagonal steps, weight 1.
+* mobility - empty diagonal steps, weight 1;
+* **back-row defence** (`BACK_ROW_WEIGHT = 16`, scaled by the opponent's men) -
+  a man left on our own back row stops the enemy from crowning, so the engine no
+  longer walks its defence away and loses a promotion race.
 
 Keeping the positional terms small matters: with large piece-square bonuses the
 engine starts chasing space and loses material, with small ones it plays solid
 tactical checkers and converts its material advantage.
+
+### Making it stronger
+
+The two knobs that matter are **time per move** and **depth cap**; the engine
+always uses the whole clock (iterative deepening), so the clock is what buys
+strength:
+
+| | panel field | CLI | iOS (`app.py`) |
+| --- | --- | --- | --- |
+| think time | `წამი/სვლა` (5 s) | `--time 8` | `SECONDS = 8.0` |
+| depth cap | `სიღრმე` (9) | `--depth 14` | `DEPTH = 12` |
+
+* `--time 10 --depth 16` is about the maximum a 30 s turn clock allows with the
+  human "thinking" pause on top - roughly 2 plies deeper than the defaults;
+* endgames get up to `max_extra_depth` (6) extra plies automatically, so a
+  6-piece endgame is searched 12-16 plies deep;
+* the match runner `scripts/engine_match.py` measures any change objectively:
+  it plays two engine modules against each other with swapped colours and
+  random openings (`python scripts/engine_match.py --games 20 --seconds 0.3
+  --a checkersbot.ai --b <reference module>`), so an evaluation or search tweak
+  is only kept when it actually scores more than 50 %;
+* what is *not* in here: opening book, endgame databases and a native (C/Cython)
+  move generator. The Python move generator is ~70 % of the search time, so a
+  native port is the single biggest remaining gain; the databases would make
+  the last 8-10 pieces perfect.
 
 ## Repetition handling
 
@@ -718,19 +755,23 @@ repeat deliberately to draw). `game.py` maintains that history automatically.
 
 ## Measured performance
 
-Single core, CPython 3.10, 2 second budget per move:
+Single core, CPython 3.10, `scripts/bench`-style runs on the opening position:
 
 | Position | Depth reached | Nodes | Time |
 | --- | --- | --- | --- |
-| opening position | 10 plies | 121,856 | 2.0 s |
-| mid-game, 9 v 9 pieces | 10 plies | 141,312 | 2.0 s |
-| opening, fixed depth 8 | 8 plies | 16,061 | 0.26 s (~61k nodes/s) |
+| opening, 2 s budget | 10 plies | 72,704 | 2.0 s |
+| opening, fixed depth 8 | 8 plies | 16,061 | 0.29 s (~55k nodes/s) |
+| endgame (8 pieces), 10 depth cap | 13-15 plies | ~400k | 6-15 s |
 
 Strength checks (all with a 0.2 s budget per move):
 
 * beats a 1-ply greedy opponent as RED in 45 plies and as BLACK in 58 plies;
 * an engine-vs-engine game at depth 6 / 0.2 s is decided in 163 plies (~26 s)
-  instead of shuffling into a draw.
+  instead of shuffling into a draw;
+* **`scripts/engine_match.py` vs the previous release** (back-row evaluation and
+  the faster move generator against the engine that shipped before it, swapped
+  colours, random 4-ply openings, 0.15 s per move): **5 W / 0 L / 9 D = 67.9 %**
+  of the points over 14 games - the new evaluation is stronger, not just newer.
 
 ## Tests
 

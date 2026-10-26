@@ -70,6 +70,7 @@ class FakeSite:
         self.lobby_opened = False
         self.games_entered = 0
         self.coin_accepts = 0
+        self.coin_declines = 0
         self.chat_declines = 0
         self.draw_accepts = 0
         self.rematch_requests = 0
@@ -77,6 +78,10 @@ class FakeSite:
 
     def accept_coin_offer(self) -> str:
         self.coin_accepts += 1
+        return "clicked"
+
+    def decline_coin_offer(self) -> str:
+        self.coin_declines += 1
         return "clicked"
 
     def accept_draw_offer(self) -> str:
@@ -210,12 +215,35 @@ class AutoLoopTests(unittest.TestCase):
     def test_a_bigger_stake_is_accepted_once(self):
         offered = SiteState(_raw(False, 10, opponent_coins=5000))
         site = FakeSite([offered])
-        bot = self._bot(site)
+        bot = self._bot(site, accept_stake=True)
 
         self.assertFalse(bot._answer_offers(offered))      # answered, play on
         self.assertEqual(site.coin_accepts, 1)
         self.assertEqual(bot._coin_offer_answered, 5000)
         # the server may keep the amount for a moment: do not answer twice
+        self.assertFalse(bot._answer_offers(offered))
+        self.assertEqual(site.coin_accepts, 1)
+
+    def test_a_bigger_stake_is_refused_by_default(self):
+        offered = SiteState(_raw(False, 10, opponent_coins=5000))
+        site = FakeSite([offered])
+        bot = self._bot(site)                             # accept_stake is off
+
+        self.assertFalse(bot.accept_stake)
+        self.assertFalse(bot._answer_offers(offered))      # declined, play on
+        self.assertEqual(site.coin_declines, 1)
+        self.assertEqual(site.coin_accepts, 0)
+        self.assertFalse(bot._answer_offers(offered))      # only once per amount
+        self.assertEqual(site.coin_declines, 1)
+
+    def test_the_stake_switch_can_be_turned_on_while_playing(self):
+        offered = SiteState(_raw(False, 10, opponent_coins=5000))
+        site = FakeSite([offered])
+        bot = self._bot(site)
+        bot._answer_offers(offered)                        # refused first
+        self.assertEqual(site.coin_declines, 1)
+        bot.accept_stake = True                            # the user ticks the box
+        bot._coin_offer_answered = 0                       # a new, bigger offer
         self.assertFalse(bot._answer_offers(offered))
         self.assertEqual(site.coin_accepts, 1)
 
@@ -417,7 +445,7 @@ class AutoLoopTests(unittest.TestCase):
         board = Board()
         offered = SiteState(_raw(False, 10, opponent_coins=5000))
         site = FakeSite([offered])
-        bot = self._bot(site, depth=6, time_limit=1.0)
+        bot = self._bot(site, depth=6, time_limit=1.0, accept_stake=True)
 
         move = bot._search_move(board)              # the search runs in a thread
         self.assertIsNotNone(move)

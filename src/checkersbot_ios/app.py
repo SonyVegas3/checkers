@@ -38,8 +38,8 @@ from .site import WebViewSite
 
 DEFAULT_URL = "https://jokergame.cc/checkers"
 LOG_LINES = 40
-DEPTH = 9            # engine search depth (the panel's default)
-SECONDS = 5.0        # seconds per move
+DEPTH = 12           # engine search depth cap (the clock decides what fits)
+SECONDS = 8.0        # seconds per move - the site's turn clock allows 30
 THINK_DELAYS = (2.0, 3.0, 5.0, 7.0)   # human-like pauses (the first move is quick)
 QUICK_DELAYS = (1.0, 2.0, 3.0)        # used when the move was obvious (e.g. a capture)
 STAKE = 0            # lobby stake: 0 = 50 coins (the cheapest table)
@@ -57,8 +57,12 @@ class CheckersBotApp(toga.App):
         )
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._bot_thread: Optional[threading.Thread] = None
+        self._bot: Optional[CheckersBot] = None
         self._stop = threading.Event()
         self._lose_flag = False
+        #: off by default: a bigger stake costs coins, so the bot only agrees when
+        #: the "💰 ფსონის გაზრდა" switch next to the buttons is on
+        self._accept_stake = False
 
     # -- window content -------------------------------------------------
     def build_content(self, app, **kwargs) -> Any:
@@ -79,6 +83,13 @@ class CheckersBotApp(toga.App):
         self.lose_button = toga.Button(
             "😞 მარცხი", on_press=self.on_lose, style=Pack(width=100, margin=6)
         )
+        # a switch, not a button: it stays on until it is switched off again
+        self.stake_label = toga.Label(
+            "💰 ფსონის გაზრდა", style=Pack(margin=(6, 0, 0, 10))
+        )
+        self.stake_switch = toga.Switch(
+            "", on_change=self.on_stake_toggle, style=Pack(margin=(6, 6, 0, 0))
+        )
         self.status = toga.Label(
             "CheckersBot 2.0 — იტვირთება...", style=Pack(margin=(6, 6, 0, 6))
         )
@@ -90,7 +101,8 @@ class CheckersBotApp(toga.App):
 
         buttons = toga.Box(
             style=Pack(direction=ROW),
-            children=[self.start_button, self.lose_button, self.reload_button],
+            children=[self.start_button, self.lose_button, self.reload_button,
+                      self.stake_label, self.stake_switch],
         )
         root = toga.Box(
             style=Pack(direction=COLUMN, flex=1, background_color="#101418"),
@@ -226,6 +238,7 @@ class CheckersBotApp(toga.App):
             coins=STAKE,
             use_probe=True,
             rules="joker",
+            accept_stake=self._accept_stake,
             log=self.log_line,
             should_stop=self._stop.is_set,
             should_lose=lambda: self._lose_flag,
@@ -234,6 +247,7 @@ class CheckersBotApp(toga.App):
         self._bot_thread = threading.Thread(
             target=self._run_bot, args=(bot,), name="checkersbot", daemon=True
         )
+        self._bot = bot
         self._set_screen_awake(True)
         self._bot_thread.start()
         self.log_line("ბოტი მუშაობს — თამაშობს უწყვეტად (რემატჩი ან ახალი ოპონენტი)")
@@ -265,6 +279,16 @@ class CheckersBotApp(toga.App):
             return
         self._lose_flag = True
         self.log_line("😞 მარცხი ჩართულია - ბოტი საშუალო დონეზე ითამაშებს")
+
+    def on_stake_toggle(self, widget, **kwargs) -> None:
+        """Agree to a bigger stake only while this switch is on."""
+        self._accept_stake = bool(getattr(widget, "value", False))
+        if self._bot_thread is not None and self._bot_thread.is_alive():
+            self._bot.accept_stake = self._accept_stake
+        if self._accept_stake:
+            self.log_line("💰 ფსონის გაზრდაზე დათანხმება ჩართულია")
+        else:
+            self.log_line("💰 ფსონის გაზრდაზე დათანხმება გამორთულია (უარს იტყვის)")
 
     async def on_reload(self, widget, **kwargs) -> None:
         try:

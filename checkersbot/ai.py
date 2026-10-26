@@ -51,6 +51,12 @@ MAN_VALUE = 100
 KING_VALUE = 180
 MOBILITY_WEIGHT = 1
 
+#: A man on our own back row stops the enemy from crowning; it is worth extra
+#: while the opponent still has men that could promote (a classic checker term -
+#: without it the engine happily walks its defence away and loses to a
+#: promotion race).  The bonus is scaled by the opponent's man count below.
+BACK_ROW_WEIGHT = 16
+
 # Bonus for a red man ``n`` rows away from its home row (row 7).  Deliberately
 # small: material has to dominate, otherwise the engine starts chasing space.
 ADVANCEMENT = (0, 1, 2, 4, 6, 9, 12, 16)
@@ -104,6 +110,8 @@ def evaluate(board: Board) -> int:
     score = 0
     red_mobility = 0
     black_mobility = 0
+    red_men = black_men = 0
+    red_back = black_back = 0
     flying = board.flying_kings
 
     for square in PLAYABLE_SQUARES:
@@ -113,6 +121,9 @@ def evaluate(board: Board) -> int:
         if piece > 0:
             if piece == RED_MAN:
                 score += MAN_VALUE + RED_MAN_PST[square]
+                red_men += 1
+                if square >= 56:                   # red's own back row
+                    red_back += 1
                 steps = RED_STEPS[square]
             else:
                 score += KING_VALUE + RED_KING_PST[square]
@@ -123,6 +134,9 @@ def evaluate(board: Board) -> int:
         else:
             if piece == BLACK_MAN:
                 score -= MAN_VALUE + BLACK_MAN_PST[square]
+                black_men += 1
+                if square < 8:                     # black's own back row
+                    black_back += 1
                 steps = BLACK_STEPS[square]
             else:
                 score -= KING_VALUE + BLACK_KING_PST[square]
@@ -132,6 +146,9 @@ def evaluate(board: Board) -> int:
                     black_mobility += 1
 
     score += (red_mobility - black_mobility) * MOBILITY_WEIGHT
+    # back-row defence, scaled by the opponent's men (nothing to defend against
+    # once they are all gone)
+    score += (red_back * black_men - black_back * red_men) * BACK_ROW_WEIGHT // 12
     return score
 
 
@@ -419,15 +436,18 @@ class CheckersAI:
                 if alpha >= beta:
                     return entry_score
 
+        if depth <= -self.quiescence_depth:
+            # The quiescence budget is spent: evaluating is enough, and
+            # ``generate_moves`` is the most expensive call in the whole search.
+            return evaluate(board) * board.turn
+
         moves = board.generate_moves()
         if not moves:
             return -MATE + ply                     # no move: the side to move loses
 
-        if depth <= 0:
-            # Quiescence: as long as the side to move must jump, keep searching,
-            # otherwise the horizon effect would make the search blind to tactics.
-            if depth <= -self.quiescence_depth or not moves[0].captured:
-                return evaluate(board) * board.turn
+        if depth <= 0 and not moves[0].captured:
+            # no jump is forced: the position is quiet, so the static score holds
+            return evaluate(board) * board.turn
 
         best_score = -INF
         best_move: Optional[Move] = None

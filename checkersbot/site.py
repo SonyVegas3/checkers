@@ -240,6 +240,51 @@ ACCEPT_DRAW_JS = (
 """
 )
 
+#: Turn down the opponent's bigger-stake offer (``--accept-stake`` is off).
+#:
+#: The site closes that offer by itself after ~10 s, so the bot only helps it
+#: along: the dialog's own reject button is pressed when it can be found, and
+#: otherwise nothing is clicked at all - the game simply continues when the offer
+#: expires.  (Clicking the accept button by mistake would raise the stake.)
+DECLINE_COIN_OFFER_JS = (
+    r"""
+(function () {"""
+    + _DIALOG_HELPERS
+    + r"""
+  var reject = label(283, 'Reject');
+  var markers = [label(266, 'stake'), label(281, 'Bet offer'), '\u10db\u10dd\u10dc\u10d4\u10e2',
+                 'coin', 'Coin', 'bet', 'Bet', 'stake', '\u0441\u0442\u0430\u0432\u043a'];
+  var dialogs = document.querySelectorAll(
+      '.big-dialog, .v2-game-dialog, .v2-confirm, .confirm-dialog');
+  for (var index = dialogs.length - 1; index >= 0; index -= 1) {
+    var dialog = dialogs[index];
+    if (!visible(dialog)) continue;
+    var body = dialog.textContent || '';
+    var looks_like_offer = dialog.classList.contains('v2m-coin-offer');
+    for (var m = 0; m < markers.length && !looks_like_offer; m += 1) {
+      if (markers[m] && body.indexOf(markers[m]) >= 0) looks_like_offer = true;
+    }
+    if (!looks_like_offer) continue;
+    var buttons = dialog.querySelectorAll('.big-dialog-button, .app-button, button');
+    for (var b = 0; b < buttons.length; b += 1) {
+      if ((buttons[b].textContent || '').trim() === reject) {
+        buttons[b].click();
+        return 'clicked';
+      }
+    }
+    var light = dialog.querySelector('[button-style="light"]');
+    if (light) { light.click(); return 'light'; }
+    if (buttons.length > 1) {
+      buttons[buttons.length - 1].click();      // the reject button is the last
+      return 'fallback';
+    }
+    return 'waiting';                            // let the 10 s timer do the work
+  }
+  return 'none';
+})()
+"""
+)
+
 #: What the "searching for an opponent" dialog is doing right now.
 SEARCH_STATUS_JS = r"""
 (function () {
@@ -717,6 +762,9 @@ class Site(Protocol):
 
     def accept_coin_offer(self) -> str:
         """Accept the opponent's bigger stake (the dialog blocks the game)."""
+
+    def decline_coin_offer(self) -> str:
+        """Refuse the opponent's bigger stake (the site closes it after ~10 s)."""
 
     def accept_draw_offer(self) -> str:
         """Agree to the opponent's draw offer (unanswered it loses on time)."""

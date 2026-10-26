@@ -33,6 +33,7 @@ from checkersbot.site import (
     ACCEPT_DRAW_JS,
     CANCEL_SEARCH_JS,
     DECLINE_CHAT_JS,
+    DECLINE_COIN_OFFER_JS,
     FIT_VIEW_JS,
     LOBBY_STEP_JS,
     LOBBY_URL,
@@ -243,6 +244,10 @@ class WebViewSite:
     def accept_draw_offer(self) -> str:
         """Agree to the opponent's draw offer (unanswered it loses on time)."""
         return str(self._eval(f"JSON.stringify({ACCEPT_DRAW_JS})") or "none")
+
+    def decline_coin_offer(self) -> str:
+        """Refuse the bigger stake (the site closes that offer after ~10 s)."""
+        return str(self._eval(f"JSON.stringify({DECLINE_COIN_OFFER_JS})") or "none")
 
     def decline_chat_offer(self) -> str:
         """Close the chat invitation (the site itself only hides the dialog)."""

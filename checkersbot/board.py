@@ -102,6 +102,10 @@ def col_of(square: int) -> int:
     return square & 7
 
 
+#: ``ROW_OF[square]`` - the function call is measurable in the search hot loop
+ROW_OF: Tuple[int, ...] = tuple(square >> 3 for square in range(SQUARE_COUNT))
+
+
 def is_playable_square(square: int) -> bool:
     """True for the 32 dark squares pieces are allowed to stand on."""
     if not 0 <= square < SQUARE_COUNT:
@@ -309,7 +313,7 @@ class Move:
 class Board:
     """A mutable 8x8 checkers position plus the side to move and the rules."""
 
-    __slots__ = ("cells", "turn", "rules")
+    __slots__ = ("cells", "turn", "rules", "_flying", "_backwards", "_longest", "_crown_continues")
 
     def __init__(
         self,
@@ -329,21 +333,27 @@ class Board:
             raise ValueError(f"rules must be one of {', '.join(RULES)}")
         self.turn = turn
         self.rules = rules
+        # the rule flags are asked millions of times during a search, so they are
+        # decided once here instead of comparing strings in every node
+        self._flying = rules in ("russian", "brazilian", "joker")
+        self._backwards = rules in ("brazilian", "joker")
+        self._longest = rules in ("brazilian", "joker")
+        self._crown_continues = rules == "joker"
 
     @property
     def flying_kings(self) -> bool:
         """True when kings slide and capture at a distance (Russian/Brazilian)."""
-        return self.rules in ("russian", "brazilian", "joker")
+        return self._flying
 
     @property
     def men_capture_backwards(self) -> bool:
         """True when men may capture in all four directions (Brazilian rules)."""
-        return self.rules in ("brazilian", "joker")
+        return self._backwards
 
     @property
     def maximum_capture(self) -> bool:
         """True when the longest capture sequence is compulsory (Brazilian rules)."""
-        return self.rules in ("brazilian", "joker")
+        return self._longest
 
     @property
     def promotion_continues(self) -> bool:
@@ -353,7 +363,7 @@ class Board:
         jump sequence and lets it carry on as a flying king, so one move can be
         "man jumps, is crowned, the new king jumps again".
         """
-        return self.rules == "joker"
+        return self._crown_continues
 
     # ------------------------------------------------------------------
     # construction helpers
@@ -497,7 +507,7 @@ class Board:
             for target in steps:
                 if cells[target] != 0:
                     continue
-                promote = man and row_of(target) == crown_row
+                promote = man and ROW_OF[target] == crown_row
                 moves.append(Move(square, target, (), promote))
         return moves
 
@@ -549,7 +559,7 @@ class Board:
             extended = True
             captured.append(over)
             path.append(land)
-            if not king and row_of(land) == crown_row:
+            if not king and ROW_OF[land] == crown_row:
                 if self.promotion_continues:
                     # crowned in the middle of the jump: the rest of the chain is
                     # played by the new king (jokergame.cc), and the move ends as

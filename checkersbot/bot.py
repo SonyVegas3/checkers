@@ -67,6 +67,7 @@ class CheckersBot:
         rules: str = "joker",
         rematch_wait: float = 30.0,
         chat_wait: float = 5.0,
+        accept_stake: bool = False,
         think_delays: Sequence[float] = (2.0, 3.0, 5.0, 7.0),
         quick_delays: Sequence[float] = (1.0, 2.0, 3.0),
         obvious_gap: int = 150,
@@ -113,6 +114,9 @@ class CheckersBot:
         self.rematch_wait = max(1.0, float(rematch_wait))
         # how long a chat invitation is left alone before the bot declines it
         self.chat_wait = max(1.0, float(chat_wait))
+        #: does the bot agree when the opponent raises the stake?  Off by default
+        #: (a raise costs coins), the panel checkbox / ``--accept-stake`` turns it on
+        self.accept_stake = bool(accept_stake)
         # human-like pacing: the first move of a game is quick, the rest waits one
         # of these times ("thinking"), so the bot does not play like a machine.
         # ``quick_delays`` is used when the position was easy (a forced capture,
@@ -876,18 +880,27 @@ class CheckersBot:
             self._draw_offer_tries = 0
 
         if state.coin_offer and state.coin_offer != self._coin_offer_answered:
-            answer = str(self.site.accept_coin_offer())
-            if answer in ("", "none", "None"):
-                waiting = True
-                if not self._coin_offer_dumped:
-                    self._coin_offer_dumped = True
-                    self.log("! could not click the stake offer - saving the page "
-                             "for diagnosis")
-                    self._save_debug("stake-offer")
-            else:
+            if not self.accept_stake:
+                # a raise costs coins: unless the user asked for it, the offer is
+                # turned down (the site closes it by itself after ~10 s, so the
+                # bot waits it out and keeps playing)
+                answer = str(self.site.decline_coin_offer())
                 self._coin_offer_answered = state.coin_offer
-                self.log(f"the opponent offers to play for "
-                         f"{state.coin_offer} coins - accepted ({answer})")
+                self.log(f"the opponent offers to play for {state.coin_offer} coins "
+                         f"- declined ({answer}), the stake stays as it is")
+            else:
+                answer = str(self.site.accept_coin_offer())
+                if answer in ("", "none", "None"):
+                    waiting = True
+                    if not self._coin_offer_dumped:
+                        self._coin_offer_dumped = True
+                        self.log("! could not click the stake offer - saving the page "
+                                 "for diagnosis")
+                        self._save_debug("stake-offer")
+                else:
+                    self._coin_offer_answered = state.coin_offer
+                    self.log(f"the opponent offers to play for "
+                             f"{state.coin_offer} coins - accepted ({answer})")
         if state.chat_offer:
             now = time.time()
             if self._chat_handled:
