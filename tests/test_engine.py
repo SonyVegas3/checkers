@@ -521,6 +521,68 @@ class JokerRulesTests(unittest.TestCase):
         self.assertFalse(Board(rules="brazilian").promotion_continues)
 
 
+class FlyingKingCaptureTests(unittest.TestCase):
+    """A king ("damka") captures over any distance and keeps going.
+
+    This is what jokergame.cc plays: the king picks a piece from afar, lands
+    anywhere behind it and, if another piece is reachable from there, takes that
+    one too - the opponent can use it, so the engine has to see it.
+    """
+
+    def test_a_king_takes_two_men_in_one_move(self):
+        board = Board.from_rows([
+            "........",
+            "......b.",      # g7
+            "........",
+            "....b...",      # e5
+            "........",
+            "..R.....",      # c3: over e5 to f6, then over g7 to h8
+            "........",
+            "........",
+        ], turn=RED, rules="joker")
+        moves = board.generate_moves()
+        self.assertEqual([m.notation() for m in moves], ["c3xh8"])
+        move = moves[0]
+        self.assertEqual(move.captured_count, 2)
+        self.assertEqual([square_name(s) for s in move.captured], ["e5", "g7"])
+        self.assertEqual([square_name(s) for s in move.landing_path], ["f6", "h8"])
+        board.apply_move(move)
+        self.assertEqual(board.piece_count(BLACK), 0)
+        self.assertEqual(board.piece_at(parse_square("h8")), RED_KING)
+
+    def test_a_king_may_land_anywhere_behind_the_captured_piece(self):
+        board = Board.from_rows([
+            "........",
+            "........",
+            "........",
+            "....b...",      # e5
+            "........",
+            "..R.....",      # c3
+            "........",
+            "........",
+        ], turn=RED, rules="joker")
+        landings = sorted(square_name(m.to_square) for m in board.generate_moves())
+        self.assertEqual(landings, ["f6", "g7", "h8"])   # not just the next square
+        # ...but never on the piece it took or behind a blocker
+        self.assertNotIn("e5", landings)
+
+    def test_the_engine_plays_the_double_king_capture(self):
+        board = Board.from_rows([
+            "........",
+            "......b.",
+            "........",
+            "....b...",
+            "........",
+            "..R.....",
+            "........",
+            "........",
+        ], turn=RED, rules="joker")
+        ai = CheckersAI(color=RED, max_depth=4, time_limit=0.5)
+        move = ai.choose_move(board)
+        self.assertIsNotNone(move)
+        self.assertEqual(move.captured_count, 2)
+
+
 
 class EvaluationTests(unittest.TestCase):
     def test_start_position_is_balanced(self):

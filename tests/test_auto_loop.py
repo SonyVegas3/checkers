@@ -442,6 +442,7 @@ class AutoLoopTests(unittest.TestCase):
         bot._think(legal)
         self.assertLess(time.time() - started, 1.6)   # 0.4-1.2 s only
 
+    def test_the_bot_offers_a_rematch_itself(self):
         finished = SiteState(_raw(True, 40))
         fresh = SiteState(_raw(False, 2))
         site = FakeSite([finished, fresh, fresh, fresh])
@@ -452,6 +453,26 @@ class AutoLoopTests(unittest.TestCase):
         self.assertTrue(bot._next_game(finished))
         self.assertGreaterEqual(site.rematch_requests, 1)
         self.assertTrue(any("rematch offered" in line for line in lines), lines)
+
+    def test_auto_rematch_off_goes_straight_to_the_lobby(self):
+        finished = SiteState(_raw(True, 40))
+        fresh = SiteState(_raw(False, 1))
+        site = FakeSite([finished, fresh])
+        bot = self._bot(site, rematch=False)
+
+        self.assertTrue(bot._next_game(finished))
+        self.assertEqual(site.rematch_requests, 0)         # no offer was sent
+        self.assertTrue(site.lobby_opened)                 # a new opponent instead
+
+    def test_a_live_auto_rematch_switch_is_read_after_every_game(self):
+        finished = SiteState(_raw(True, 40))
+        fresh = SiteState(_raw(False, 1))
+        site = FakeSite([finished, fresh])
+        bot = self._bot(site, rematch_wait=1.0, should_rematch=lambda: False)
+
+        self.assertTrue(bot._next_game(finished))
+        self.assertEqual(site.rematch_requests, 0)
+        self.assertTrue(site.lobby_opened)
 
 
     def test_an_offer_is_answered_while_the_engine_thinks(self):

@@ -111,7 +111,7 @@ What the panel offers:
 | **1. საიდან დაიწყოს თამაში** | `ავტორიზაცია → ლობი` (signs in with the e-mail/password, then walks the lobby), `ლობი` (the browser profile is already signed in) or `უკვე ღია დაფა` (no lobby at all — the bot only plays the table that is already open, `--no-lobby`) |
 | **2. ავტორიზაცია** | e-mail/phone + password; the password stays in memory and is **never** written to disk |
 | **3. მაგიდა და თანხა** | stake ladder exactly as the site renders it (`0` = 50, `1` = 5 000, `2` = 50 000, `3` = 200 000, `4` = 1 000 000, `5` = 10 000 000 coins), browser profile folder, browser (Playwright Chromium / installed Chrome / Edge) and log folder |
-| **4. ძრავა** | depth, seconds per move, poll interval, max moves, **max games**, **rematch wait**, **thinking times** (2,3,5,7 — the board rules are fixed to the site's `joker` set), plus headless / close-browser / board-trace / dry-run / probe / **💰 ფსონის გაზრდაზე დათანხმება** toggles |
+| **4. ძრავა** | depth, seconds per move, poll interval, max moves, **max games**, **rematch wait**, **thinking times** (2,3,5,7 — the board rules are fixed to the site's `joker` set), plus headless / close-browser / board-trace / dry-run / probe / **💰 ფსონის გაზრდაზე დათანხმება** / **🔁 ავტო-რემატჩი** toggles |
 | **buttons** | `▶ დაწყება`, `■ შეჩერება` (cooperative, stops after the current move), `✔ წესების შემოწმება` (`--diagnose`), open log/profile folders, save settings |
 | **5. ლოგი** | live output of the bot (same lines as the CLI), mirrored to a file with `--log-file` |
 
@@ -234,16 +234,22 @@ Notes from getting this green in CI:
    cookies; the app never stores a password). You do **not** have to open a
    table: the bot walks the lobby itself.
 2. Press **▶ დაწყება**. It finds an opponent at the cheapest table
-   (`STAKE = 0` → 50 coins), plays **depth 12 with 8 s per move** (`DEPTH` /
+   (`STAKE = 0` → 50 coins), plays **depth 18 with 12 s per move** (`DEPTH` /
    `SECONDS` in `src/checkersbot_ios/app.py` — raise them for more strength) and
-   keeps going: when a game ends
-   it asks for a rematch, waits up to 30 s, and then leaves the table and looks
-   for a new opponent — until you press **■ გაჩერება**.  **😞 მარცხი** makes it
-   lose the current game with average-player moves — nothing is handed over for
-   free (see "Losing on purpose").  **💰 ფსონის გაზრდაზე დათანხმება** is the switch on
-   its own row under the buttons (the buttons alone fill a phone's width) — it lets
-   the bot accept a raised stake, is **off by default** (a raise is then refused),
-   and it is read before every offer, so flipping it mid-game works.
+   keeps going: when a game ends it asks for a rematch, waits up to 30 s, and then
+   leaves the table and looks for a new opponent — until you press **■ გაჩერება**.
+   Under the two buttons are three **switches**, each on its own row (a row next
+   to the buttons would be pushed off a phone screen):
+   * **😞 მარცხი (ადამიანურად)** — the bot loses the current game with
+     average-player moves, nothing is handed over for free (see "Losing on
+     purpose"); it goes back to off when the bot stops;
+   * **💰 ფსონის გაზრდაზე დათანხმება** — accept a raised stake (off by default:
+     a raise is refused);
+   * **🔁 ავტო-რემატჩი** — offer a rematch after every game (on by default; turn
+     it off to leave the table immediately and look for a new opponent).
+
+   All three are read live: flipping one while the bot plays takes effect at the
+   next offer / next game, and the log shows their state at start and on change.
 3. The log under the board shows the same lines as the desktop bot.
 4. While the bot runs the app keeps the screen awake (`idleTimerDisabled`), so
    the game continues when nobody touches the phone. iOS suspends apps that go
@@ -390,6 +396,7 @@ python web_bot.py --headless --max-moves 20 --poll 0.5
 | `--quick-delays` | `1,2,3` | the same for an obvious move (one or two choices, a forced capture, one clearly best move) |
 | `--lose` | off | play weak moves on purpose (lose the game with a believable mistake) |
 | `--accept-stake` | off | agree when the opponent raises the stake (off = the raise is declined, it costs coins) |
+| `--no-rematch` | off | do not offer a rematch after a game: leave the table and search a new opponent at once |
 | `--max-errors` | `5` | stop after N consecutive failures (screenshots are saved to `logs/`) |
 | `--no-probe` | off | trust the engine without asking the site (debug only) |
 | `--trace-board` | off | log the parsed board before every move |
@@ -407,7 +414,9 @@ it:
 
 1. the lobby is walked once (**Play a game → Random people → stake**);
 2. the game is played to the end;
-3. the bot **offers the rematch itself**: the finish dialog keeps **Rematch** for
+3. the bot **offers the rematch itself** (unless **🔁 ავტო-რემატჩი** / the panel
+   checkbox / `--no-rematch` turned it off, in which case step 5 comes at once):
+   the finish dialog keeps **Rematch** for
    30 s, and the bot asks through the site's own API
    (`init_play.rematch({opponent_id})` — the exact call the button makes), so it
    works in any site language. The request is sent at once and repeated when the
@@ -496,7 +505,8 @@ checked.
 
 Both UIs have a switch that makes the bot **lose the current game** — the
 **😞 მარცხი** button next to Start/Stop in the panel (it ticks the checkbox in
-group 4), the same **😞 მარცხი** button in the iOS app, and `--lose` on the CLI.
+group 4), the **😞 მარცხი (ადამიანურად)** switch in the iOS app, and `--lose` on
+the CLI.
 It does **not** play like a beginner: it plays like an **average club player**,
 so a loss looks like a bad day, not like a thrown game:
 

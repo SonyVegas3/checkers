@@ -960,6 +960,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--accept-stake", action="store_true",
                         help="agree when the opponent raises the stake (off by "
                              "default: a raise costs coins, the bot declines it)")
+    parser.add_argument("--no-rematch", action="store_true",
+                        help="do not offer a rematch after a game: leave the table "
+                             "and look for a new opponent at once")
     parser.add_argument("--max-errors", type=int, default=5, help="stop after N consecutive failures")
     parser.add_argument("--once", action="store_true", help="play a single move, then exit")
     parser.add_argument("--dry-run", action="store_true",
@@ -1118,6 +1121,8 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
                 chat_wait=args.chat_wait,
                 accept_stake=args.accept_stake,
                 should_accept_stake=getattr(args, "should_accept_stake", None),
+                rematch=not args.no_rematch,
+                should_rematch=getattr(args, "should_rematch", None),
                 think_delays=think_delays,
                 quick_delays=quick_delays,
                 log=log,

@@ -69,6 +69,8 @@ class CheckersBot:
         chat_wait: float = 5.0,
         accept_stake: bool = False,
         should_accept_stake=None,
+        rematch: bool = True,
+        should_rematch=None,
         think_delays: Sequence[float] = (2.0, 3.0, 5.0, 7.0),
         quick_delays: Sequence[float] = (1.0, 2.0, 3.0),
         obvious_gap: int = 150,
@@ -122,6 +124,10 @@ class CheckersBot:
         #: polled like ``should_lose``, so the checkbox can be ticked *while* the
         #: bot plays and the next offer already follows the new setting
         self.should_accept_stake = should_accept_stake
+        #: offer a rematch after every game?  Off = leave the table at once and look
+        #: for a new opponent (the panel checkbox / iOS switch / --no-rematch)
+        self.rematch = bool(rematch)
+        self.should_rematch = should_rematch
         # human-like pacing: the first move of a game is quick, the rest waits one
         # of these times ("thinking"), so the bot does not play like a machine.
         # ``quick_delays`` is used when the position was easy (a forced capture,
@@ -188,6 +194,15 @@ class CheckersBot:
             except Exception:                     # a dead widget must not stop us
                 return self.accept_stake
         return self.accept_stake
+
+    def _rematch_wanted(self) -> bool:
+        """Should a rematch be offered after the game (live from the checkbox)?"""
+        if self.should_rematch is not None:
+            try:
+                return bool(self.should_rematch())
+            except Exception:                     # a dead widget must not stop us
+                return self.rematch
+        return self.rematch
 
     #: how far (in evaluation units - a man is 100) a "losing on purpose" move may
     #: fall behind the best one.  About three quarters of a man is what an average
@@ -1134,6 +1149,14 @@ class CheckersBot:
         was still loading can be lost, and the site's own offer expires).
         """
         self.games_played += 1
+        if not self._rematch_wanted():
+            self.log(f"game {self.games_played} is over - auto-rematch is off, "
+                     "looking for a new opponent")
+            self._reset_for_new_game()
+            if not self.lobby_walk:
+                self.log("lobby walking is off - stopping after this game")
+                return False
+            return self._find_new_table()
         self.log(
             f"game {self.games_played} is over - offering a rematch "
             f"({int(self.rematch_wait)}s for the answer)"
@@ -1182,6 +1205,10 @@ class CheckersBot:
             self.log("lobby walking is off - stopping after this game")
             return False
 
+        return self._find_new_table()
+
+    def _find_new_table(self) -> bool:
+        """Walk the lobby until a table opens - it keeps trying until stopped."""
         self.log("leaving the table and looking for a new opponent")
         attempts = 0
         while not self._stop_requested():

@@ -1,0 +1,48 @@
+﻿--- L2705
+				bet(d);
+				break;
+			case 'trump':
+				d.classList.add('v2m-suits', 'v2m-peek');
+				emblem(d, '<img src="ui/images/v2/crown-gold.svg" alt="" />');
+
+				var bezi = d.querySelector('.suit-icon[suit-id="n"]');
+				if(bezi && lang_id() == 'geo' && text_of(bezi) == 'ბეზი' && !bezi.hasAttribute('data-v2m-sub')) {
+					bezi.setAttribute('data-v2m-sub', 'უკოზიროდ');
+				}
+				break;
+--- L2714
+				}
+				break;
+			case 'jk-take':
+				d.classList.add('v2m-suits', 'v2m-peek');
+				emblem(d, '<img src="ui/images/v2/crown-silver.svg" alt="" />');
+				break;
+			case 'jk-high':
+				d.classList.add('v2m-suits', 'v2m-peek');
+				emblem(d, '<img src="ui/images/v2/crown-gold.svg" alt="" />');
+				break;
+			case 'choice':
+--- L2718
+				emblem(d, '<img src="ui/images/v2/crown-silver.svg" alt="" />');
+				break;
+			case 'jk-high':
+				d.classList.add('v2m-suits', 'v2m-peek');
+				emblem(d, '<img src="ui/images/v2/crown-gold.svg" alt="" />');
+				break;
+			case 'choice':
+				d.classList.add('v2m-peek');
+				choice(d);
+				break;
+			case 'cards':
+--- L7060
+				obj.self.game_stones[args.stone_id]['king'] = args.king;
+				
+				// update king
+				$('.game-stone[stone-id="'+args.stone_id+'"]', obj.container).attr({
+					'stone-king': args.king
+				});
+			}
+		}
+	}
+
+	this.click_square = function(element, args) {

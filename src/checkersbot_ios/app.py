@@ -63,6 +63,8 @@ class CheckersBotApp(toga.App):
         #: off by default: a bigger stake costs coins, so the bot only agrees when
         #: the "💰 ფსონის გაზრდა" switch next to the buttons is on
         self._accept_stake = False
+        #: offer a rematch after every game (the 🔁 switch turns it off)
+        self._auto_rematch = True
 
     # -- window content -------------------------------------------------
     def build_content(self, app, **kwargs) -> Any:
@@ -75,22 +77,29 @@ class CheckersBotApp(toga.App):
 
     def _build_ui(self) -> Any:
         self.start_button = toga.Button(
-            "▶ დაწყება", on_press=self.on_start, style=Pack(width=110, margin=4)
+            "▶ დაწყება", on_press=self.on_start, style=Pack(width=130, margin=4)
         )
         self.reload_button = toga.Button(
-            "↻ განახლება", on_press=self.on_reload, style=Pack(width=110, margin=4)
+            "↻ განახლება", on_press=self.on_reload, style=Pack(width=130, margin=4)
         )
-        self.lose_button = toga.Button(
-            "😞 მარცხი", on_press=self.on_lose, style=Pack(width=95, margin=4)
+        # One switch per row, text inside the switch: three buttons already fill
+        # the width of a phone, so anything next to them gets pushed off screen.
+        self.lose_switch = toga.Switch(
+            "😞 მარცხი (ადამიანურად)",
+            value=False,
+            on_change=self.on_lose_toggle,
+            style=Pack(margin=(8, 8, 0, 8)),
         )
-        # The stake switch gets a row of its own: the three buttons already fill
-        # the width of a phone, so a switch next to them was pushed off the screen
-        # and could not be tapped.  Its text lives *inside* the switch, so the
-        # whole row is the tap target.
         self.stake_switch = toga.Switch(
             "💰 ფსონის გაზრდაზე დათანხმება",
             value=bool(self._accept_stake),
             on_change=self.on_stake_toggle,
+            style=Pack(margin=(8, 8, 0, 8)),
+        )
+        self.rematch_switch = toga.Switch(
+            "🔁 ავტო-რემატჩი",
+            value=bool(self._auto_rematch),
+            on_change=self.on_rematch_toggle,
             style=Pack(margin=(8, 8, 2, 8)),
         )
         self.status = toga.Label(
@@ -104,11 +113,11 @@ class CheckersBotApp(toga.App):
 
         buttons = toga.Box(
             style=Pack(direction=ROW),
-            children=[self.start_button, self.lose_button, self.reload_button],
+            children=[self.start_button, self.reload_button],
         )
         toggles = toga.Box(
-            style=Pack(direction=ROW),
-            children=[self.stake_switch],
+            style=Pack(direction=COLUMN),
+            children=[self.lose_switch, self.stake_switch, self.rematch_switch],
         )
         root = toga.Box(
             style=Pack(direction=COLUMN, flex=1, background_color="#101418"),
@@ -247,6 +256,8 @@ class CheckersBotApp(toga.App):
             accept_stake=self._accept_stake,
             # the switch is read before every offer, so it can be flipped mid-game
             should_accept_stake=lambda: self._accept_stake,
+            rematch=self._auto_rematch,
+            should_rematch=lambda: self._auto_rematch,
             log=self.log_line,
             should_stop=self._stop.is_set,
             should_lose=lambda: self._lose_flag,
@@ -262,6 +273,10 @@ class CheckersBotApp(toga.App):
         self.log_line(
             "💰 ფსონის გაზრდაზე დათანხმება: "
             + ("ჩართულია" if self._accept_stake else "გამორთულია (უარს იტყვის)")
+        )
+        self.log_line(
+            "🔁 ავტო-რემატჩი: "
+            + ("ჩართულია" if self._auto_rematch else "გამორთულია (ახალი ოპონენტი)")
         )
         self.status.text = "ვეძებ მაგიდას..."
 
@@ -281,16 +296,44 @@ class CheckersBotApp(toga.App):
     def _bot_finished(self, code: int) -> None:
         self._set_screen_awake(False)
         self._lose_flag = False
+        try:                                       # the switch goes back to "off"
+            self.lose_switch.value = False
+        except Exception:
+            pass
         self.start_button.text = "▶ დაწყება"
         self.status.text = "დასრულდა" if code == 0 else f"შეჩერდა ({code})"
 
-    def on_lose(self, widget, **kwargs) -> None:
-        """Ask the bot to lose this game - with average-player moves."""
-        if not (self._bot_thread is not None and self._bot_thread.is_alive()):
-            self.log_line("ჯერ დააჭირე „დაწყებას“")
-            return
-        self._lose_flag = True
-        self.log_line("😞 მარცხი ჩართულია - ბოტი საშუალო დონეზე ითამაშებს")
+    def on_lose_toggle(self, widget, **kwargs) -> None:
+        """Lose the running game with average-player moves, while the switch is on."""
+        value = getattr(widget, "value", None)
+        if value is None:
+            value = kwargs.get("value")
+        if value is None:
+            value = getattr(getattr(self, "lose_switch", None), "value", False)
+        self._lose_flag = bool(value)
+        if self._lose_flag:
+            if not (self._bot_thread is not None and self._bot_thread.is_alive()):
+                self.log_line("😞 მარცხი ჩართულია — ბოტის გაშვებისას ითამაშებს სუსტად")
+            else:
+                self.log_line("😞 მარცხი ჩართულია - ბოტი საშუალო დონეზე ითამაშებს")
+        else:
+            self.log_line("😞 მარცხი გამორთულია - ჩვეულებრივ ძალაზე თამაშობს")
+
+    def on_rematch_toggle(self, widget, **kwargs) -> None:
+        """Offer a rematch after every game only while this switch is on."""
+        value = getattr(widget, "value", None)
+        if value is None:
+            value = kwargs.get("value")
+        if value is None:
+            value = getattr(getattr(self, "rematch_switch", None), "value", True)
+        self._auto_rematch = bool(value)
+        bot = self._bot
+        if bot is not None:
+            bot.rematch = self._auto_rematch
+        if self._auto_rematch:
+            self.log_line("🔁 ავტო-რემატჩი: ჩართულია (თამაშის შემდეგ სთავაზობს)")
+        else:
+            self.log_line("🔁 ავტო-რემატჩი: გამორთულია (ახალ ოპონენტს ეძებს)")
 
     def on_stake_toggle(self, widget, **kwargs) -> None:
         """Agree to a bigger stake only while this switch is on."""

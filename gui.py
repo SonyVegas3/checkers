@@ -106,6 +106,7 @@ class Settings:
     dry_run: bool = False
     no_probe: bool = False
     accept_stake: bool = False      # default: refuse a bigger stake (it costs coins)
+    auto_rematch: bool = True       # offer a rematch after every game
     no_fit: bool = False
     diagnose: bool = False
     cdp: str = ""
@@ -186,6 +187,7 @@ class Settings:
             ("--dry-run", self.dry_run),
             ("--no-probe", self.no_probe),
             ("--accept-stake", self.accept_stake),
+            ("--no-rematch", not self.auto_rematch),
             ("--no-fit", self.no_fit),
             ("--diagnose", self.diagnose),
         ):
@@ -376,6 +378,7 @@ class BotWindow:
         self.noprobe_var = tk.BooleanVar()
         self.lose_var = tk.BooleanVar()
         self.accept_stake_var = tk.BooleanVar()
+        self.auto_rematch_var = tk.BooleanVar(value=True)
         for index, (text, variable) in enumerate((
             ("უხილავი (headless)", self.headless_var),
             ("ბრაუზერის დახურვა დასრულების შემდეგ", self.closebrowser_var),
@@ -384,6 +387,7 @@ class BotWindow:
             ("probe-ის გამორთვა", self.noprobe_var),
             ("😞 მარცხი (ადამიანურად)", self.lose_var),
             ("💰 ფსონის გაზრდაზე დათანხმება", self.accept_stake_var),
+            ("🔁 ავტო-რემატჩი", self.auto_rematch_var),
         )):
             # a grid, not a single row: six checkboxes do not fit the window
             ttk.Checkbutton(checks, text=text, variable=variable).grid(
@@ -454,6 +458,7 @@ class BotWindow:
         self.dryrun_var.set(bool(s.dry_run))
         self.noprobe_var.set(bool(s.no_probe))
         self.accept_stake_var.set(bool(s.accept_stake))
+        self.auto_rematch_var.set(bool(s.auto_rematch))
         self._sync_state()
 
     def _collect(self) -> Settings:
@@ -481,6 +486,7 @@ class BotWindow:
         s.dry_run = bool(self.dryrun_var.get())
         s.no_probe = bool(self.noprobe_var.get())
         s.accept_stake = bool(self.accept_stake_var.get())
+        s.auto_rematch = bool(self.auto_rematch_var.get())
         # values with no widget stay as they were loaded
         s.no_fit = self.settings.no_fit
         s.window_size = self.settings.window_size
@@ -624,6 +630,7 @@ class BotWindow:
             args.should_stop = self.stop_event.is_set
             args.should_lose = self.lose_var.get
             args.should_accept_stake = self.accept_stake_var.get
+            args.should_rematch = self.auto_rematch_var.get
             code = run_bot(args, log=self.log_line)
         except SystemExit as error:                  # argparse validation
             code = int(error.code or 0)
