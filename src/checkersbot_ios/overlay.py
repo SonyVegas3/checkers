@@ -371,6 +371,128 @@ def show_alert(controller: Any, title: str, message: str, limit: int = 1200) -> 
         return False
 
 
+def _cg() -> Tuple[Any, Any]:
+    """``CGRectMake`` / ``NSMakeSize`` (imported late: only iOS has them)."""
+    from rubicon.objc import CGRectMake, NSMakeSize     # noqa: PLC0415 - device only
+
+    return CGRectMake, NSMakeSize
+
+
+def scroll_report(scroll_impl: Any) -> str:
+    """The real ``UIScrollView`` numbers - evidence for "the list will not scroll".
+
+    ``contentSize`` is what makes a ``UIScrollView`` scrollable; if it is not taller
+    than the frame, iOS will not move it no matter how many settings are inside.
+    """
+    native = read(scroll_impl, "native")
+    if native is None:
+        return "scroll: (no native view)"
+    frame = read(native, "frame")
+    size = read(native, "contentSize")
+    offset = read(native, "contentOffset")
+    doc = read(scroll_impl, "document_container")
+    doc_native = read(doc, "native") if doc is not None else None
+    doc_size = read(read(doc_native, "frame"), "size") if doc_native is not None else None
+    return (
+        "scroll: frame=%.0fx%.0f contentSize=%.0fx%.0f offset=%.0f,%.0f "
+        "doc=%.0fx%.0f enabled=%s bounce=%s delays=%s inset=%s"
+        % (
+            number(read(frame, "size"), "width"),
+            number(read(frame, "size"), "height"),
+            number(size, "width"),
+            number(size, "height"),
+            number(offset, "x"),
+            number(offset, "y"),
+            number(doc_size, "width"),
+            number(doc_size, "height"),
+            bool(read(native, "isScrollEnabled", True, "scrollEnabled")),
+            bool(read(native, "alwaysBounceVertical", True)),
+            bool(read(native, "delaysContentTouches", True)),
+            int(number(read(native, "contentInsetAdjustmentBehavior"), 0)),
+        )
+    )
+
+
+def scroll_extent(scroll_impl: Any, content_impl: Any = None) -> float:
+    """How tall the settings really are, taking the most trustworthy source.
+
+    ``UIScrollView.contentSize`` must be at least this tall or the controls below
+    the fold are unreachable.  Measured from (a) Toga's layout of the content box,
+    (b) the native subviews inside the scroll document, whichever is larger.
+    """
+    extent = 0.0
+    if content_impl is not None:
+        extent = max(extent, number(read(content_impl, "layout"), "height", 0.0))
+    doc = read(scroll_impl, "document_container")
+    doc_native = read(doc, "native") if doc is not None else None
+    if doc_native is not None:
+        for sub in list(read(doc_native, "subviews", []) or []):
+            frame = read(sub, "frame")
+            extent = max(extent,
+                         number(read(frame, "origin"), "y")
+                         + number(read(frame, "size"), "height"))
+        extent = max(extent, number(read(read(doc_native, "frame"), "size"), "height"))
+    return extent
+
+
+def ensure_vertical_scroll(scroll_impl: Any, content_impl: Any = None,
+                           minimum: float = 0.0,
+                           cg: Any = None) -> Tuple[bool, str]:
+    """Make a Toga ``ScrollContainer`` actually scroll its whole content.
+
+    Toga sets ``contentSize`` in ``ScrollContainer.content_refreshed()`` from the
+    *layout* height of the content box; anything that keeps that value too small (a
+    relayout while the panel is still 44 pt tall, a document view whose frame is
+    re-applied by Auto Layout, ...) leaves a scroll view that looks fine but cannot
+    be scrolled, so the lower settings are unreachable.  This re-measures, fixes
+    ``contentSize``/document frame, and sets the touch-behaviour flags iOS needs for
+    the controls inside to be tappable.  Idempotent and never raises.
+    """
+    try:
+        native = read(scroll_impl, "native")
+        if native is None:
+            return False, "no native view"
+        frame = read(native, "frame")
+        view_w = number(read(frame, "size"), "width")
+        view_h = number(read(frame, "size"), "height")
+        if view_w <= 1:
+            return False, f"scroll view has no width ({view_w:.0f} pt)"
+        current = number(read(native, "contentSize"), "height", 0.0)
+        extent = scroll_extent(scroll_impl, content_impl)
+        target = max(current, extent, float(minimum), view_h)
+        changed: List[str] = []
+        if target > current + 1:
+            CGRectMake, NSMakeSize = cg or _cg()
+            native.contentSize = NSMakeSize(view_w, target)
+            changed.append(f"contentSize {current:.0f}->{target:.0f}")
+            doc = read(scroll_impl, "document_container")
+            doc_native = read(doc, "native") if doc is not None else None
+            if doc_native is not None:            # hit-testing outside the old frame
+                try:
+                    doc_native.frame = CGRectMake(0, 0, view_w, target)
+                except Exception:
+                    pass
+        for attribute, value in (
+            ("alwaysBounceVertical", True),       # a short list still feels scrollable
+            ("isScrollEnabled", True),
+            ("showsVerticalScrollIndicator", True),
+            ("delaysContentTouches", False),      # taps reach the controls at once
+            ("canCancelContentTouches", True),
+            ("contentInsetAdjustmentBehavior", 2),  # never: the panel is inside safe
+        ):
+            try:
+                if bool(read(native, attribute)) != bool(value):
+                    setattr(native, attribute, value)
+                    changed.append(f"{attribute}={value}")
+            except Exception:
+                continue
+        summary = ", ".join(changed) if changed else "already correct"
+        return True, (f"viewport {view_w:.0f}x{view_h:.0f}, content {target:.0f} pt "
+                      f"({summary})")
+    except Exception as error:                  # never break the panel for this
+        return False, f"{type(error).__name__}: {error}"
+
+
 def diagnostics(view: Any, max_depth: int = 6, max_children: int = 6) -> List[str]:
     """Dump the native view hierarchy - the only way to see what UIKit really did.
 
@@ -606,6 +728,9 @@ __all__ = [
     "body_visible",
     "root_controller",
     "show_alert",
+    "scroll_report",
+    "scroll_extent",
+    "ensure_vertical_scroll",
     "layout_now",
     "paint_background",
     "top_ancestor",

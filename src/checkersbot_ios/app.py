@@ -547,6 +547,7 @@ class CheckersBotApp(toga.App):
             self.log_line("overlay: panel pinned=%s toga_constraints=%s"
                           % (bool(getattr(self, "_panel_state", None)),
                              ",".join(active) or "none"))
+            self._log_scroll()
         except Exception as error:               # logging must never break the UI
             self.log_line(f"! overlay: frame report failed: {error}")
 
@@ -682,6 +683,7 @@ class CheckersBotApp(toga.App):
         # where the panel and the game really are after this transition
         self._log_frames("sheet " + ("open" if opening else "closed"))
         if opening:
+            self._ensure_scroll()                 # every setting must be reachable
             try:      # 0.7 s later: is the body actually inside the visible panel?
                 self.loop.call_later(0.7, self._verify_open)
             except Exception:
@@ -700,6 +702,7 @@ class CheckersBotApp(toga.App):
         """
         if getattr(self, "body", None) is None or self.body.style.display == "none":
             return
+        self._ensure_scroll()                     # after the panel is really 304 pt
         visible, reason = overlay.body_visible(self.body._impl, self.sheet._impl)
         self.log_line(f"overlay: open check: {'ok' if visible else 'FAILED'} - {reason}")
         if visible:
@@ -718,6 +721,39 @@ class CheckersBotApp(toga.App):
             pass
         self._log_frames("fallback")
 
+    def _ensure_scroll(self) -> None:
+        """Make sure every setting is reachable: the list must really scroll.
+
+        Toga's ``ScrollContainer`` sets ``UIScrollView.contentSize`` from a layout
+        refresh; when that value is too small the panel looks fine but the settings
+        below the fold cannot be reached.  This re-measures the real content height,
+        fixes ``contentSize`` and the document frame, and sets the touch flags
+        (``delaysContentTouches = False`` - otherwise iOS swallows the first tap on a
+        control inside a scroll view), then logs the resulting numbers.
+        """
+        scroll = getattr(self, "_scroll_container", None)
+        if scroll is None:
+            return
+        content = getattr(self, "_settings_content", None)
+        try:
+            ok, report = overlay.ensure_vertical_scroll(
+                scroll._impl, content, minimum=SHEET_BODY_H)
+        except Exception as error:                # never break the panel for this
+            self.log_line(f"! overlay: scroll fix failed: {error}")
+            return
+        self.log_line(f"overlay: scroll {'ok' if ok else 'FAILED'} - {report}")
+        self._log_scroll()
+
+    def _log_scroll(self) -> None:
+        """The raw ``UIScrollView`` numbers - the evidence for a scroll bug."""
+        scroll = getattr(self, "_scroll_container", None)
+        if scroll is None or sys.platform != "ios":
+            return
+        try:
+            self.log_line(overlay.scroll_report(scroll._impl))
+        except Exception as error:
+            self.log_line(f"! overlay: scroll report failed: {error}")
+
     def on_show_diagnostics(self, widget=None, **kwargs) -> None:
         """Show the log in a native alert - works even if the panel cannot open."""
         try:
@@ -730,6 +766,8 @@ class CheckersBotApp(toga.App):
                     overlay.describe_overlay(getattr(self.body._impl, "native", None),
                                              "body"),
                     overlay.describe_pin(self.webview._impl),
+                    overlay.scroll_report(getattr(
+                        getattr(self, "_scroll_container", None), "_impl", None)),
                     f"stage height style: {self.stage.style.height}"]
             text = "\n".join(head + ["", *lines])
             controller = overlay.root_controller(self.webview._impl.native)
@@ -835,13 +873,15 @@ class CheckersBotApp(toga.App):
             "ცვლილებები მაშინვე მოქმედებს გაშვებულ ბოტზეც — გარდა „მაქს. თამაში / "
             "მაქს. სვლა“, რომლებიც შემდეგ გაშვებაზე შედის ძალაში.",
             style=Pack(font_size=10, color="#7f8f9f", margin=(4, 8, 8, 8))))
+        self._settings_content = toga.Box(style=Pack(direction=COLUMN), children=children)
+        self._scroll_container = toga.ScrollContainer(
+            content=self._settings_content,
+            horizontal=False,
+            style=Pack(flex=1, background_color="#111a22"),
+        )
         self.body = toga.Box(
             style=Pack(direction=COLUMN, height=SHEET_BODY_H, display="none"),
-            children=[toga.ScrollContainer(
-                content=toga.Box(style=Pack(direction=COLUMN), children=children),
-                horizontal=False,
-                style=Pack(flex=1, background_color="#111a22"),
-            )],
+            children=[self._scroll_container],
         )
 
     # -- one row per setting ---------------------------------------------

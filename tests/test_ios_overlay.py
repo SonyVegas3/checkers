@@ -665,6 +665,142 @@ class SettingsButtonSourceTests(unittest.TestCase):
             self.assertIn(marker, self.source)
 
 
+class FakeScrollView(PropertyView):
+    """A ``UIScrollView`` stand-in: properties (rubicon shape) + the flags iOS uses."""
+
+    def __init__(self, width=390, height=260, content_height=44.0, doc_height=44.0):
+        super().__init__("UIScrollView", size=(width, height))
+        self.contentSize = types.SimpleNamespace(width=width, height=content_height)
+        self.contentOffset = types.SimpleNamespace(x=0, y=0)
+        self.isScrollEnabled = True
+        self.alwaysBounceVertical = False
+        self.showsVerticalScrollIndicator = False
+        self.delaysContentTouches = True
+        self.canCancelContentTouches = True
+        self.contentInsetAdjustmentBehavior = 0
+        self.document_container = types.SimpleNamespace(
+            native=PropertyView("document", size=(width, doc_height)))
+
+
+class FakeScrollImpl:
+    def __init__(self, view):
+        self.native = view
+        self.document_container = view.document_container
+
+
+def _fake_cg():
+    """``CGRectMake`` / ``NSMakeSize`` stand-ins (rubicon is device-only)."""
+    def rect(x=0, y=0, width=0, height=0):
+        return types.SimpleNamespace(
+            origin=types.SimpleNamespace(x=x, y=y),
+            size=types.SimpleNamespace(width=width, height=height),
+        )
+
+    def size(width=0, height=0):
+        return types.SimpleNamespace(width=width, height=height)
+
+    return rect, size
+
+
+class ScrollTests(unittest.TestCase):
+    """The settings list must really scroll - every control has to be reachable."""
+
+    def test_content_size_is_raised_to_the_real_content_height(self):
+        view = FakeScrollView()
+        impl = FakeScrollImpl(view)
+        content = types.SimpleNamespace(layout=types.SimpleNamespace(height=760.0))
+        ok, report = overlay.ensure_vertical_scroll(impl, content, minimum=260, cg=_fake_cg())
+        self.assertTrue(ok, report)
+        self.assertGreaterEqual(view.contentSize.height, 760.0)
+        self.assertEqual(view.contentSize.width, 390)
+        self.assertIn("contentSize", report)
+        # the document view must cover the whole content so taps below the fold land
+        self.assertGreaterEqual(view.document_container.native.frame.size.height, 760.0)
+
+    def test_touch_flags_let_the_controls_be_used(self):
+        view = FakeScrollView()
+        ok, _ = overlay.ensure_vertical_scroll(FakeScrollImpl(view), cg=_fake_cg())
+        self.assertTrue(ok)
+        # without this iOS swallows the first tap on a control inside a scroll view
+        self.assertFalse(view.delaysContentTouches)
+        self.assertTrue(view.alwaysBounceVertical)
+        self.assertTrue(view.isScrollEnabled)
+        self.assertTrue(view.showsVerticalScrollIndicator)
+        self.assertEqual(view.contentInsetAdjustmentBehavior, 2)   # never
+
+    def test_a_correct_scroll_view_is_left_alone(self):
+        view = FakeScrollView(content_height=760.0, doc_height=760.0)
+        impl = FakeScrollImpl(view)
+        content = types.SimpleNamespace(layout=types.SimpleNamespace(height=760.0))
+        first = overlay.ensure_vertical_scroll(impl, content, cg=_fake_cg())
+        second = overlay.ensure_vertical_scroll(impl, content, cg=_fake_cg())
+        self.assertTrue(first[0] and second[0])
+        self.assertIn("already correct", second[1])
+        self.assertEqual(view.contentSize.height, 760.0)
+
+    def test_native_subviews_extend_the_measured_extent(self):
+        view = FakeScrollView()
+        view.document_container.native.children = [
+            PropertyView("row", size=(390, 300), origin=(0, 0)),
+            PropertyView("row", size=(390, 420), origin=(0, 300)),
+        ]
+        content = types.SimpleNamespace(layout=types.SimpleNamespace(height=100.0))
+        self.assertAlmostEqual(overlay.scroll_extent(FakeScrollImpl(view), content),
+                               720.0)
+
+    def test_scroll_extent_prefers_the_layout_when_it_is_larger(self):
+        view = FakeScrollView()
+        content = types.SimpleNamespace(layout=types.SimpleNamespace(height=900.0))
+        self.assertGreaterEqual(overlay.scroll_extent(FakeScrollImpl(view), content),
+                                900.0)
+
+    def test_ensure_vertical_scroll_never_raises(self):
+        ok, report = overlay.ensure_vertical_scroll(types.SimpleNamespace(native=None))
+        self.assertFalse(ok)
+        self.assertIn("no native view", report)
+
+    def test_a_zero_width_scroll_view_is_reported(self):
+        view = FakeScrollView(width=0, height=0)
+        ok, report = overlay.ensure_vertical_scroll(FakeScrollImpl(view), cg=_fake_cg())
+        self.assertFalse(ok)
+        self.assertIn("no width", report)
+
+    def test_scroll_report_mentions_the_numbers(self):
+        report = overlay.scroll_report(FakeScrollImpl(FakeScrollView()))
+        for token in ("frame=390x260", "contentSize=390x44", "delays=True",
+                      "inset=0", "doc=390x44"):
+            self.assertIn(token, report)
+
+    def test_scroll_report_without_a_view(self):
+        self.assertIn("no native view", overlay.scroll_report(None))
+
+
+class ScrollingSourceTests(unittest.TestCase):
+    """The panel must fix and log its scroll view when it opens."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (ROOT / "src" / "checkersbot_ios" / "app.py").read_text(
+            encoding="utf-8")
+
+    def test_the_scroll_view_is_kept_and_fixed(self):
+        self.assertIn("self._scroll_container = toga.ScrollContainer(", self.source)
+        self.assertIn("self._settings_content = toga.Box(", self.source)
+        self.assertIn("def _ensure_scroll(self)", self.source)
+        self.assertIn("overlay.ensure_vertical_scroll(", self.source)
+        # called when the panel opens and again once the panel is really tall
+        self.assertEqual(self.source.count("self._ensure_scroll()"), 2)
+
+    def test_the_scroll_numbers_are_logged(self):
+        self.assertIn("overlay.scroll_report(", self.source)
+        self.assertIn("def _log_scroll(self)", self.source)
+
+    def test_the_body_is_still_a_scroll_container(self):
+        self.assertIn("horizontal=False", self.source)
+        # the WebView stays untouched by the scroll fixes
+        self.assertIn("WEBVIEW_PIN_ENABLED = False", self.source)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

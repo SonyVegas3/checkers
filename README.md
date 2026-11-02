@@ -295,6 +295,31 @@ screen brightness down or let the bot run on the PC instead.
    **WebView keeps its Toga constraints** (the ios-28 mistake of pinning the
    WebView itself is gone for good - `WEBVIEW_PIN_ENABLED = False`).
 
+   **Settings scrolling (`ios-33`).**  The body is a Toga `ScrollContainer`
+   (`horizontal=False`), and Toga fills `UIScrollView.contentSize` in
+   `ScrollContainer.content_refreshed()` from the *layout* height of the content
+   box.  If that value ends up smaller than the real content, the panel looks
+   perfect and simply will not scroll - the lower settings become unreachable.
+   When the panel opens (twice: immediately and 0.7 s later), the app now calls
+   `overlay.ensure_vertical_scroll()`, which re-measures the content (Toga layout
+   **and** the native subviews inside the scroll document, whichever is larger) and
+
+   - raises `contentSize` (and the document frame) to the measured height,
+   - sets `alwaysBounceVertical`, `isScrollEnabled`, `showsVerticalScrollIndicator`,
+     `delaysContentTouches = False` (otherwise iOS swallows the first tap on a
+     control inside a scroll view) and `contentInsetAdjustmentBehavior = never`
+     (the panel already sits inside the safe area, so no double inset),
+
+   then logs the raw numbers, e.g.
+
+   ```
+   overlay: scroll ok - viewport 390x260, content 812 pt (contentSize 44->812, delaysContentTouches=False)
+   scroll: frame=390x260 contentSize=390x812 offset=0,0 doc=390x812 enabled=True bounce=True delays=False inset=2
+   ```
+
+   The same line is shown by the **ⓘ** alert, so a non-scrolling list can be
+   diagnosed without opening the panel.  Nothing here touches the WebView.
+
    **Why ⚙ did nothing in `ios-31` (fixed in `ios-32`):** `_install_overlay` set
    `sheet.style.height = SHEET_BAR_H` (44 pt) *before* pinning and never restored
    it when the pin failed or was rolled back.  Toga lays a box's children out from
