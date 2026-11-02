@@ -297,10 +297,16 @@ class CheckersBotApp(toga.App):
             "📜", on_press=self.on_toggle_log,
             style=Pack(width=52, margin=0, display="none"),
         )
+        # always visible: opens the diagnostics alert, which needs neither the
+        # panel nor the WebView - the only way to read the log if ⚙ ever fails
+        self.info_button = toga.Button(
+            "ⓘ", on_press=self.on_show_diagnostics, style=Pack(width=40, margin=0)
+        )
         self.bar = toga.Box(
             style=Pack(direction=ROW, height=SHEET_BAR_H, background_color="#111a22",
                        margin=(0, 6, 6, 6)),
-            children=[self.sheet_button, self.status, self.start_button, self.log_button],
+            children=[self.sheet_button, self.status, self.start_button,
+                      self.log_button, self.info_button],
         )
 
     def _build_log(self) -> None:
@@ -350,25 +356,35 @@ class CheckersBotApp(toga.App):
         """
         if self._panel_state and not force:
             return True
+        if getattr(self, "_panel_broken", False) and not force:
+            # the floating panel already failed once on this device: don't make the
+            # user wait 0.7 s for the fallback again, open the layout sheet at once
+            return False
         if not PANEL_OVERLAY_ENABLED or sys.platform != "ios":
             if not getattr(self, "_overlay_reported", False):
                 self._overlay_reported = True
                 self.log_line("overlay: off - the sheet uses the Toga layout "
                               "(the game shrinks while it is open)")
             return False
-        self.sheet.style.height = SHEET_BAR_H     # 1) layout reserves the bar only
-        try:
+        if not self._freeze_stage():              # 0) the game can no longer move
+            self._restore_layout_sheet()
+            return False
+        self.sheet.style.height = self._panel_height()   # 1) Toga lays the panel out
+        try:                                             #    for its real height
             state = overlay.pin_panel(self.sheet._impl, height=self._panel_height())
         except Exception as error:               # never break the app for this
             self.log_line(f"! overlay: panel pin failed: {error}")
+            self._restore_layout_sheet()
             return False
         if state.get("error"):
             self.log_line(f"! overlay: the panel could not be floated ({state['error']})"
                           " - keeping the layout sheet")
+            self._restore_layout_sheet()
             return False
         if not state:
             self.log_line("! overlay: the panel could not be floated - keeping the "
                           "layout sheet")
+            self._restore_layout_sheet()
             return False
         self._panel_state = state
         overlay.bring_to_front(self.sheet._impl)
@@ -380,6 +396,62 @@ class CheckersBotApp(toga.App):
         except Exception:
             pass
         return True
+
+    def _freeze_stage(self) -> bool:
+        """Pin the stage's *layout* height to what it is right now.
+
+        Toga computes every child's frame from the **style** tree, so the sheet's
+        style height is what decides how tall the panel's children are laid out.  A
+        floating panel therefore needs the sheet's real height (44 / 304 / 424) in
+        its style - and to stop that taller style from stealing space from the game,
+        the stage gets an explicit height instead of ``flex=1``.  The WebView's own
+        constraints are never touched: it simply keeps the frame it has today.
+        """
+        try:
+            frame = overlay.read(self.stage._impl.native, "frame")
+            height = overlay.number(overlay.read(frame, "size"), "height")
+        except Exception as error:
+            self.log_line(f"! overlay: cannot measure the stage: {error}")
+            return False
+        if height <= 1:
+            self.log_line(f"! overlay: stage height is {height:.0f} pt - not freezing")
+            return False
+        self._stage_height = height
+        try:                                      # the essential part
+            self.stage.style.height = int(round(height))
+        except Exception as error:
+            self.log_line(f"! overlay: cannot freeze the stage: {error}")
+            self._stage_height = None
+            return False
+        try:                                      # and it must stop flexing
+            self.stage.style.flex = None
+        except Exception as error:
+            self.log_line(f"! overlay: cannot stop the stage flexing: {error}")
+        self.log_line(f"overlay: stage frozen at {height:.0f} pt (the game cannot move)")
+        return True
+
+    def _unfreeze_stage(self) -> None:
+        """Back to the plain layout: the stage takes the space the sheet leaves."""
+        try:
+            self.stage.style.height = None
+            self.stage.style.flex = 1
+        except Exception:
+            pass
+        self._stage_height = None
+
+    def _restore_layout_sheet(self) -> None:
+        """Whatever happens, the sheet must be allowed to grow again.
+
+        This is the ios-31 bug: the style height was set to the 44 pt bar *before*
+        pinning, so when the pin failed the sheet stayed a 44 pt box - the body was
+        laid out outside it and tapping ⚙ looked completely dead.
+        """
+        self._unfreeze_stage()
+        try:
+            self.sheet.style.height = None        # auto: the sheet may grow again
+        except Exception:
+            pass
+        self.log_line("overlay: sheet back to the layout flow - ⚙ works either way")
 
     def _panel_height(self) -> float:
         """What the floating panel should be right now (bar, body and log)."""
@@ -415,6 +487,10 @@ class CheckersBotApp(toga.App):
             else:
                 return
         target = self._panel_height()
+        try:
+            self.sheet.style.height = target        # Toga lays the children out for
+        except Exception:                           # exactly the panel's height
+            pass
         overlay.set_panel_height(state, target)
         overlay.layout_now(state.get("anchor") or self.webview._impl.native)
         try:
@@ -481,7 +557,8 @@ class CheckersBotApp(toga.App):
             return
         overlay.restore_panel(self.sheet._impl, state)
         self._panel_state = {}
-        self.sheet.style.height = None
+        self._panel_broken = True                 # don't retry on every ⚙ tap
+        self._restore_layout_sheet()
         self.log_line("! overlay: panel pin rolled back - the layout sheet is back")
 
     def _frame_report(self) -> str:
@@ -565,10 +642,30 @@ class CheckersBotApp(toga.App):
 
     # -- sheet / log toggles ---------------------------------------------
     def on_toggle_sheet(self, widget=None, **kwargs) -> None:
-        """Open/close the settings body - the WebView is never touched."""
-        self._install_overlay()                  # pin on the first use, if needed
+        """Open/close the settings body - the WebView is never touched.
+
+        Every step is logged with an ``overlay: tap`` prefix so a dead ⚙ button can
+        be diagnosed from the device log alone: whether the callback ran, what the
+        display state was, and how big the panel's native frame ended up.
+        """
+        try:
+            self._toggle_sheet()
+        except Exception:
+            self.log_line("! ⚙ დაჭერა ვერ დამუშავდა:\n" + traceback.format_exc())
+            self._restore_layout_sheet()          # never leave the controls locked
+            try:                                  # ... and show them the only way
+                self.body.style.display = "pack"  # that always works
+            except Exception:
+                pass
+
+    def _toggle_sheet(self) -> None:
+        self.log_line("⚙ დაჭერილია (on_toggle_sheet)")
         before = self._frame_report()
         opening = self.body.style.display == "none"
+        self.log_line(f"overlay: tap: body was {self.body.style.display} -> "
+                      f"{'pack' if opening else 'none'}")
+        if opening and not self._install_overlay():
+            self.log_line("overlay: tap: no floating panel - the layout sheet opens")
         self.body.style.display = "pack" if opening else "none"
         self.actions.style.display = "pack" if opening else "none"
         self.log_button.style.display = "pack" if opening else "none"
@@ -584,9 +681,64 @@ class CheckersBotApp(toga.App):
             self.log_line(f"overlay: თამაშის ზომა უცვლელია ({after})")
         # where the panel and the game really are after this transition
         self._log_frames("sheet " + ("open" if opening else "closed"))
+        if opening:
+            try:      # 0.7 s later: is the body actually inside the visible panel?
+                self.loop.call_later(0.7, self._verify_open)
+            except Exception:
+                pass
         # one hierarchy dump per toggle, so a wrong layout can be diagnosed from
         # the log instead of guessed (see _log_diagnostics)
         self._log_diagnostics("sheet " + ("open" if opening else "closed"))
+
+    def _verify_open(self) -> None:
+        """Make sure the settings are *visible* - fall back to the layout if not.
+
+        The panel can be pinned and still show nothing (the body laid out outside
+        its bounds).  That looked like a dead ⚙ button, so it is now checked, and
+        the layout sheet is restored automatically: settings must never be
+        unreachable.
+        """
+        if getattr(self, "body", None) is None or self.body.style.display == "none":
+            return
+        visible, reason = overlay.body_visible(self.body._impl, self.sheet._impl)
+        self.log_line(f"overlay: open check: {'ok' if visible else 'FAILED'} - {reason}")
+        if visible:
+            return
+        if not getattr(self, "_panel_state", None):
+            return                                # already the layout sheet
+        self.log_line("! overlay: floating panel did not show the settings - "
+                      "falling back to the layout sheet")
+        self._release_panel()
+        try:
+            self.body.style.display = "pack"      # re-assert the open state
+            self.actions.style.display = "pack"
+            self.log_button.style.display = "pack"
+            self.sheet_button.text = "▾"
+        except Exception:
+            pass
+        self._log_frames("fallback")
+
+    def on_show_diagnostics(self, widget=None, **kwargs) -> None:
+        """Show the log in a native alert - works even if the panel cannot open."""
+        try:
+            lines = ((self.log_view.value or "").splitlines()
+                     + list(getattr(self, "_pending_log", []) or []))[-18:]
+            state = bool(getattr(self, "_panel_state", None))
+            head = [f"panel pinned: {state}",
+                    overlay.describe_overlay(getattr(self.sheet._impl, "native", None),
+                                             "panel"),
+                    overlay.describe_overlay(getattr(self.body._impl, "native", None),
+                                             "body"),
+                    overlay.describe_pin(self.webview._impl),
+                    f"stage height style: {self.stage.style.height}"]
+            text = "\n".join(head + ["", *lines])
+            controller = overlay.root_controller(self.webview._impl.native)
+            if not overlay.show_alert(controller, "CheckersBot ⓘ", text):
+                self.log_line("! overlay: alert unavailable - see the log below")
+            for line in head:
+                self.log_line("ⓘ " + line)
+        except Exception:
+            self.log_line("! ⓘ ვერ გაიხსნა:\n" + traceback.format_exc())
 
     def on_toggle_log(self, widget=None, **kwargs) -> None:
         """Show/hide the log viewer (works with the settings sheet closed too).

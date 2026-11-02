@@ -21,7 +21,7 @@ back to the plain layout - the app must never break for this.
 from __future__ import annotations
 
 import sys
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 #: The four constraint slots Toga keeps on every widget implementation.
 CONSTRAINT_NAMES = ("left_constraint", "top_constraint",
@@ -311,6 +311,66 @@ def toga_active(panel_impl: Any) -> List[str]:
     return active
 
 
+def body_visible(body_impl: Any, panel_impl: Any) -> Tuple[bool, str]:
+    """Is the settings body really inside the visible panel area?
+
+    Returns ``(visible, reason)``.  This is what decides whether the floating panel
+    worked or whether the app must fall back to the plain layout sheet - a panel
+    whose body landed outside its own bounds looks exactly like "the ⚙ button does
+    nothing", which is precisely the iOS bug this exists to catch.
+    """
+    try:
+        body = read(body_impl, "frame")
+        panel = read(panel_impl, "frame")
+    except Exception as error:                  # pragma: no cover - device only
+        return False, f"frames unreadable ({error})"
+    body_h = number(read(body, "size"), "height")
+    body_y = number(read(body, "origin"), "y")
+    panel_h = number(read(panel, "size"), "height")
+    if body_h <= 1:
+        return False, f"body height {body_h:.0f} pt"
+    if panel_h <= 1:
+        return False, f"panel height {panel_h:.0f} pt"
+    if body_y < -1 or body_y + body_h > panel_h + 2:
+        return False, (f"body {body_h:.0f} pt at y={body_y:.0f} "
+                       f"is outside a {panel_h:.0f} pt panel")
+    return True, f"body {body_h:.0f} pt at y={body_y:.0f} in a {panel_h:.0f} pt panel"
+
+
+def root_controller(view: Any) -> Any:
+    """The view controller that can present an alert (``window.rootViewController``)."""
+    window = read(view, "window")
+    return read(window, "rootViewController") if window is not None else None
+
+
+def show_alert(controller: Any, title: str, message: str, limit: int = 1200) -> bool:
+    """Present a native ``UIAlertController`` - diagnostics without the panel.
+
+    When the settings panel cannot open, the log lives *inside* that panel, so there
+    is no way to read why.  An alert is presented by UIKit itself: it does not need
+    the Toga layout, the panel, or the WebView, so it always works.
+    """
+    if controller is None:
+        return False
+    text = message if len(message) <= limit else message[:limit] + "\n…"
+    try:
+        from rubicon.objc import ObjCClass      # noqa: PLC0415 - device only
+
+        alert_class = ObjCClass("UIAlertController")
+        action_class = ObjCClass("UIAlertAction")
+        alert = alert_class.alertControllerWithTitle(
+            str(title), message=str(text), preferredStyle=1,   # 1 == UIAlert
+        )
+        action = action_class.actionWithTitle("დახურვა", style=0, handler=None)
+        alert.addAction(action)
+        controller.presentViewController(
+            alert, animated=True, completion=None,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def diagnostics(view: Any, max_depth: int = 6, max_children: int = 6) -> List[str]:
     """Dump the native view hierarchy - the only way to see what UIKit really did.
 
@@ -543,6 +603,9 @@ __all__ = [
     "restore_panel",
     "toga_active",
     "describe_overlay",
+    "body_visible",
+    "root_controller",
+    "show_alert",
     "layout_now",
     "paint_background",
     "top_ancestor",

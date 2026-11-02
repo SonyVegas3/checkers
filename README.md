@@ -295,7 +295,38 @@ screen brightness down or let the bot run on the PC instead.
    **WebView keeps its Toga constraints** (the ios-28 mistake of pinning the
    WebView itself is gone for good - `WEBVIEW_PIN_ENABLED = False`).
 
-   **Why `ios-30` still showed the panel below the game:** `pin_panel` walked the
+   **Why ⚙ did nothing in `ios-31` (fixed in `ios-32`):** `_install_overlay` set
+   `sheet.style.height = SHEET_BAR_H` (44 pt) *before* pinning and never restored
+   it when the pin failed or was rolled back.  Toga lays a box's children out from
+   the **style** tree, so the sheet stayed a 44 pt box: the game looked fine, the
+   bar was visible, and the settings body was laid out *outside* the panel - a tap
+   on ⚙ changed the display flags and nothing appeared.  Now:
+
+   - the sheet's style height is always its real height (`44 / 304 / 424`), so Toga
+     lays the bar, body and log out **inside** the panel;
+   - the stage gets an explicit `height` (measured once) instead of `flex=1`, so a
+     taller sheet style can never take space from the game - the WebView keeps
+     exactly the frame it has, and its constraints are still untouched;
+   - every pin failure calls `_restore_layout_sheet()` (stage back to `flex=1`,
+     sheet height back to auto), so ⚙ always opens *something*;
+   - 0.7 s after opening, `_verify_open()` checks that the body really sits inside
+     the visible panel (`overlay.body_visible`); if not, the floating pin is
+     released and the layout sheet is shown - settings are never unreachable;
+   - the tap itself is traced (`⚙ დაჭერილია`, `overlay: tap: body was …`,
+     `overlay: open check: …`), and a new **ⓘ** button in the bar shows the log in
+     a native `UIAlertController`, which needs neither the panel nor the WebView.
+
+   ```
+   ⚙ დაჭერილია (on_toggle_sheet)
+   overlay: tap: body was none -> pack
+   overlay: stage frozen at 800 pt (the game cannot move)
+   overlay: panel floated above the game (height 44 pt)
+   overlay: panel height -> 304 pt
+   overlay: open check: ok - body 260 pt at y=44 in a 304 pt panel
+   overlay: თამაშის ზომა უცვლელია (webview 390x800 @ 0,59 | window 390x844)
+   ```
+
+   **Why `ios-30` showed the panel below the game:** `pin_panel` walked the
    view tree with `view.superview()` / `view.window()`.  rubicon-objc exposes those
    as **properties**, so every call raised `'UIView' object is not callable`;
    `pin_panel` threw, the app caught it and quietly kept the Toga layout sheet.

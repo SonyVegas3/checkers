@@ -522,6 +522,149 @@ class PropertyShapedTests(unittest.TestCase):
                               "- UIKit exposes it as a property")
 
 
+class PanelVisibilityTests(unittest.TestCase):
+    """The ⚙ bug: a panel can be pinned and still show nothing."""
+
+    def _frames(self, height, y):
+        return types.SimpleNamespace(
+            size=types.SimpleNamespace(width=390, height=height),
+            origin=types.SimpleNamespace(x=0, y=y),
+        )
+
+    def test_body_inside_the_panel_is_visible(self):
+        body = types.SimpleNamespace(frame=self._frames(260, 44))
+        panel = types.SimpleNamespace(frame=self._frames(304, 540))
+        visible, reason = overlay.body_visible(body, panel)
+        self.assertTrue(visible, reason)
+        self.assertIn("260", reason)
+
+    def test_body_outside_the_panel_is_not_visible(self):
+        # exactly what a 44 pt sheet box did: the body was laid out at y=44
+        body = types.SimpleNamespace(frame=self._frames(260, 44))
+        panel = types.SimpleNamespace(frame=self._frames(44, 800))
+        visible, reason = overlay.body_visible(body, panel)
+        self.assertFalse(visible)
+        self.assertIn("outside", reason)
+
+    def test_collapsed_body_is_not_visible(self):
+        body = types.SimpleNamespace(frame=self._frames(0, 44))
+        panel = types.SimpleNamespace(frame=self._frames(304, 540))
+        self.assertFalse(overlay.body_visible(body, panel)[0])
+
+    def test_body_visible_reads_rubicon_properties(self):
+        body = PropertyView("body", size=(390, 260), origin=(0, 44))
+        panel = PropertyView("panel", size=(390, 304), origin=(0, 540))
+        self.assertTrue(overlay.body_visible(body, panel)[0])
+
+
+class AlertTests(unittest.TestCase):
+    """Diagnostics must be readable even when the panel cannot open."""
+
+    def test_root_controller_reads_the_window_property(self):
+        controller = object()
+        view = PropertyView("game")
+        view.window = types.SimpleNamespace(rootViewController=controller)
+        self.assertIs(overlay.root_controller(view), controller)
+
+    def test_root_controller_without_a_window(self):
+        self.assertIsNone(overlay.root_controller(PropertyView("game")))
+
+    def test_show_alert_presents_on_the_controller(self):
+        presented = {}
+
+        class FakeAlert:
+            @classmethod
+            def alertControllerWithTitle(cls, title, message=None, preferredStyle=1):
+                presented["title"] = title
+                presented["message"] = message
+                return cls()
+
+            def addAction(self, action):
+                presented.setdefault("actions", []).append(action)
+
+        class FakeAction:
+            @classmethod
+            def actionWithTitle(cls, title, style=0, handler=None):
+                return cls()
+
+        class FakeController:
+            def presentViewController(self, alert, animated=True, completion=None):
+                presented["alert"] = alert
+                presented["animated"] = animated
+
+        fake_objc = types.ModuleType("rubicon.objc")
+        fake_objc.ObjCClass = lambda name: {"UIAlertController": FakeAlert,
+                                            "UIAlertAction": FakeAction}[name]
+        fake_rubicon = types.ModuleType("rubicon")
+        fake_rubicon.objc = fake_objc
+        saved = {name: sys.modules.get(name) for name in ("rubicon", "rubicon.objc")}
+        sys.modules["rubicon"] = fake_rubicon
+        sys.modules["rubicon.objc"] = fake_objc
+        try:
+            ok = overlay.show_alert(FakeController(), "CheckersBot ⓘ", "log text")
+        finally:
+            for name, module in saved.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+        self.assertTrue(ok)
+        self.assertEqual(presented["title"], "CheckersBot ⓘ")
+        self.assertEqual(presented["message"], "log text")
+        self.assertIn("alert", presented)
+
+    def test_show_alert_without_a_controller_is_false(self):
+        self.assertFalse(overlay.show_alert(None, "t", "m"))
+
+
+class SettingsButtonSourceTests(unittest.TestCase):
+    """Source-level checks for the ⚙ wiring (``app.py`` needs Toga to import)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (ROOT / "src" / "checkersbot_ios" / "app.py").read_text(
+            encoding="utf-8")
+
+    def test_the_sheet_is_never_stuck_at_the_bar_height(self):
+        # ios-31 set the style height to the 44 pt bar *before* pinning and kept it
+        # when the pin failed -> the body was laid out outside a 44 pt box and ⚙
+        # looked dead.  The failure paths must restore an auto height.
+        self.assertNotIn("self.sheet.style.height = SHEET_BAR_H", self.source)
+        self.assertIn("self.sheet.style.height = self._panel_height()", self.source)
+        failures = self.source.count("self._restore_layout_sheet()")
+        self.assertGreaterEqual(failures, 4, "every pin failure must restore the sheet")
+
+    def test_the_button_callback_is_wired_and_guarded(self):
+        self.assertIn("on_press=self.on_toggle_sheet", self.source)
+        self.assertIn("def _toggle_sheet(self)", self.source)
+        # an exception must never leave the settings unreachable
+        self.assertIn('self.body.style.display = "pack"  # that always works',
+                      self.source)
+
+    def test_opening_is_verified_and_can_fall_back(self):
+        self.assertIn("self.loop.call_later(0.7, self._verify_open)", self.source)
+        self.assertIn("overlay.body_visible(self.body._impl, self.sheet._impl)",
+                      self.source)
+        self.assertIn("falling back to the layout sheet", self.source)
+
+    def test_the_stage_height_is_frozen_and_released(self):
+        self.assertIn("def _freeze_stage(self)", self.source)
+        self.assertIn("self.stage.style.height = int(round(height))", self.source)
+        self.assertIn("def _unfreeze_stage(self)", self.source)
+        self.assertIn("self.stage.style.flex = 1", self.source)
+
+    def test_diagnostics_are_reachable_without_the_panel(self):
+        self.assertIn('"ⓘ", on_press=self.on_show_diagnostics', self.source)
+        self.assertIn("def on_show_diagnostics(self", self.source)
+        self.assertIn("overlay.show_alert(", self.source)
+
+    def test_tap_steps_are_logged(self):
+        for marker in ("⚙ დაჭერილია (on_toggle_sheet)",
+                       "overlay: tap: body was",
+                       "overlay: open check:"):
+            self.assertIn(marker, self.source)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
