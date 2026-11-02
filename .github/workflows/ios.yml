@@ -12,6 +12,11 @@ name: iOS app
 
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: "macOS runner image (macos-26 needs Xcode 26 for Briefcase 0.4)"
+        required: false
+        default: "macos-26"
   push:
     tags:
       - "ios-*"
@@ -25,7 +30,13 @@ jobs:
     # Briefcase 0.4.6 requires Xcode 26, so the runner must be a macOS 26 image
     # (macos-15 only ships Xcode 16 and the build stops with "Xcode 26.0 is
     # required; 16.4 is installed").
-    runs-on: macos-26
+    #
+    # GitHub-hosted arm64 Macs are often short of capacity ("Due to capacity
+    # constraints, jobs targeting macOS arm64 runners may experience longer queue
+    # times" / "the job was not acquired by Runner of type hosted").  When that
+    # happens, re-run the workflow from the Actions tab, or dispatch it by hand
+    # and pick another image in the `runner` input.
+    runs-on: ${{ github.event.inputs.runner || 'macos-26' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
