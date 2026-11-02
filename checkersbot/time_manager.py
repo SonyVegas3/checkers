@@ -58,12 +58,16 @@ def plan_budget(
     safety: float = DEFAULT_SAFETY,
     floor_s: float = MIN_BUDGET_S,
     ceiling_s: Optional[float] = None,
+    soft_ceiling_s: Optional[float] = None,
     default_s: float = DEFAULT_BUDGET_S,
 ) -> TimeBudget:
     """Turn the site's per-move clock into soft/hard search limits.
 
     ``clock_s`` is ``info.step_timeout`` (seconds) or ``None`` when the page did
     not report one.  ``ceiling_s`` is the user's own cap (``--time``).
+    ``soft_ceiling_s`` caps only the *soft* limit, i.e. "do not start another
+    iteration after this many seconds" - the cheap way to keep a phone cool
+    without ever cutting a running iteration short.
     """
     if clock_s is None or clock_s <= 0:
         hard = float(default_s)
@@ -79,8 +83,11 @@ def plan_budget(
     hard = max(floor_s, hard)
     if ceiling_s is not None:
         hard = min(hard, max(floor_s, float(ceiling_s)))
+    soft = hard * SOFT_SHARE
+    if soft_ceiling_s is not None:
+        soft = min(soft, max(0.1, float(soft_ceiling_s)))
     return TimeBudget(
-        soft_s=round(hard * SOFT_SHARE, 3),
+        soft_s=round(min(soft, hard), 3),
         hard_s=round(hard, 3),
         clock_s=None if clock_s is None else float(clock_s),
         overhead_s=float(overhead_s),

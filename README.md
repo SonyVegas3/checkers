@@ -248,14 +248,38 @@ Notes from getting this green in CI:
   payload listing + `Info.plist`) to the `ci-log` branch, which makes a failed
   build diagnosable without downloading artifacts.
 
+### Battery and heat on the phone
+
+Everything the app does per move was measured, and the three hot spots were the
+engine search, the JavaScript round trips and the log view:
+
+| what | before | now |
+| --- | --- | --- |
+| engine CPU per move | **11.9 s** (hard 12 s, soft 9 s) | **4.7 s** (hard 6 s, **soft 3 s** - no new iteration starts after 3 s, a running one is never cut) |
+| narrow positions (2-3 legal moves) | the full clock | **2 s hard / 1 s soft** (`NARROW_SECONDS`) - such a position has no long plan to find |
+| board reads while the engine thinks | every 0.4 s (~30 per move) | **every 1 s** (~6 per move) - still well inside the site's ~10 s stake dialog |
+| board polling (`poll`) | 1.0 s | 1.0 s (`BOARD_POLL_S`) |
+| log view redraws | one per line | **at most 2 per second** (`LOG_REFRESH_S`) |
+
+Measured on the same mid-game position: 11.86 s -> **4.68 s** of CPU per move
+(-60 %), depth 12 -> 10.  The knobs live at the top of
+`src/checkersbot_ios/app.py`: raise `SECONDS`/`SOFT_SECONDS` for more strength,
+lower them for a cooler phone (the CLI has `--soft-time` / `--narrow-time`).
+
+The screen is still kept awake while the bot runs (`idleTimerDisabled`): iOS
+suspends a backgrounded app, so without it the game would stop.  The display is
+the one heat source that cannot be removed - if the phone gets hot, play with the
+screen brightness down or let the bot run on the PC instead.
+
 ### Use it
 
 1. Open the app and sign in on jokergame.cc inside it (the WebView keeps the
    cookies; the app never stores a password). You do **not** have to open a
    table: the bot walks the lobby itself.
 2. Press **▶ დაწყება**. It finds an opponent at the cheapest table
-   (`STAKE = 0` → 50 coins), plays **depth 18 with 12 s per move** (`DEPTH` /
-   `SECONDS` in `src/checkersbot_ios/app.py` — raise them for more strength) and
+   (`STAKE = 0` → 50 coins), plays **depth 18 with 6 s per move** (`DEPTH` /
+   `SECONDS` / `SOFT_SECONDS` in `src/checkersbot_ios/app.py` — raise them for
+   more strength, lower them for a cooler phone) and
    keeps going: when a game ends it waits up to 30 s for the **opponent** to offer
    a rematch (it never offers one itself), accepts it if it comes, and otherwise
    leaves the table and looks for a new opponent — until you press **■ გაჩერება**.

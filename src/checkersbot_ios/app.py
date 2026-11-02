@@ -38,8 +38,12 @@ from .site import WebViewSite
 
 DEFAULT_URL = "https://jokergame.cc/checkers"
 LOG_LINES = 40
+LOG_REFRESH_S = 0.5   # the log view is redrawn at most twice a second (CPU/heat)
 DEPTH = 18           # engine search depth cap (the clock decides what fits)
-SECONDS = 12.0       # seconds per move - the site's turn clock allows 30
+SECONDS = 6.0        # hard cap per move - the search never runs longer than this
+SOFT_SECONDS = 3.0   # no new iteration starts after this: the phone stays cool
+NARROW_SECONDS = 2.0  # budget for positions with 2-3 legal moves (no long plan)
+BOARD_POLL_S = 1.0   # board polling: every read is a JavaScript round trip
 THINK_DELAYS = (2.0, 3.0, 5.0, 7.0)   # human-like pauses (the first move is quick)
 QUICK_DELAYS = (1.0, 2.0, 3.0)        # used when the move was obvious (e.g. a capture)
 STAKE = 0            # lobby stake: 0 = 50 coins (the cheapest table)
@@ -66,6 +70,9 @@ class CheckersBotApp(toga.App):
         #: wait for the opponent's rematch offer after every game (the 🔁 switch
         #: turns that waiting off; the bot never offers a rematch itself)
         self._auto_rematch = True
+        #: log lines waiting for the next (throttled) log-view redraw
+        self._pending_log: list = []
+        self._log_refresh_at = None
 
     # -- window content -------------------------------------------------
     def build_content(self, app, **kwargs) -> Any:
@@ -195,14 +202,29 @@ class CheckersBotApp(toga.App):
         loop.call_soon_threadsafe(self._append_log, text)
 
     def _append_log(self, text: str) -> None:
+        """Batch the log view: a Toga text view redraw costs real CPU on iOS."""
         view = getattr(self, "log_view", None)
         status = getattr(self, "status", None)
-        if view is not None:
-            current = view.value or ""
-            lines = (current + text + "\n").splitlines()[-LOG_LINES:]
-            view.value = "\n".join(lines) + "\n"
+        self._pending_log.append(text)
         if status is not None:
-            status.text = text[:120]
+            status.text = text[:120]                 # cheap: only the last line
+        if view is None or self._log_refresh_at is not None:
+            return                                   # a refresh is already queued
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        self._log_refresh_at = loop.call_later(LOG_REFRESH_S, self._flush_log)
+
+    def _flush_log(self) -> None:
+        """Redraw the log view at most once every ``LOG_REFRESH_S`` seconds."""
+        self._log_refresh_at = None
+        view = getattr(self, "log_view", None)
+        if view is None or not self._pending_log:
+            return
+        pending, self._pending_log = self._pending_log, []
+        current = (view.value or "").splitlines()
+        lines = (current + pending)[-LOG_LINES:]
+        view.value = "\n".join(lines) + "\n"
 
     # -- start / stop ---------------------------------------------------
     def _set_screen_awake(self, awake: bool) -> None:
@@ -242,7 +264,9 @@ class CheckersBotApp(toga.App):
             site,
             depth=DEPTH,
             time_limit=SECONDS,
-            poll=1.0,
+            soft_time=SOFT_SECONDS,
+            narrow_time=NARROW_SECONDS,
+            poll=BOARD_POLL_S,
             # fail fast when no table is open (the panel's 120 s is pointless here)
             turn_timeout=25.0,
             think_delays=THINK_DELAYS,

@@ -19,6 +19,18 @@ from checkersbot.time_manager import (
 
 
 class PlanBudgetTests(unittest.TestCase):
+    def test_the_soft_limit_can_be_capped_on_its_own(self):
+        # a phone gets hot when the engine pins the CPU: cap only the soft limit,
+        # so no iteration is ever cut in half but no new one starts either
+        budget = plan_budget(None, ceiling_s=12.0, soft_ceiling_s=3.0)
+        self.assertEqual(budget.hard_s, 12.0)
+        self.assertLessEqual(budget.soft_s, 3.0)
+
+    def test_a_soft_cap_never_exceeds_the_hard_limit(self):
+        budget = plan_budget(None, ceiling_s=4.0, soft_ceiling_s=10.0)
+        self.assertEqual(budget.hard_s, 4.0)
+        self.assertEqual(budget.soft_s, 3.0)          # 75 % of the hard limit
+
     def test_no_clock_falls_back_to_the_safe_default(self):
         budget = plan_budget(None)
         self.assertEqual(budget.hard_s, DEFAULT_BUDGET_S)

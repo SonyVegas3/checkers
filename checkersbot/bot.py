@@ -88,6 +88,8 @@ class CheckersBot:
         should_lose=None,
         lobby_walk: bool = True,
         time_overhead: Optional[float] = None,
+        soft_time: Optional[float] = None,
+        narrow_time: Optional[float] = None,
     ) -> None:
         if site_color not in ("auto",) + SITE_COLORS:
             raise ValueError("site_color must be auto, white or black")
@@ -117,6 +119,13 @@ class CheckersBot:
         self.time_overhead = (
             DEFAULT_OVERHEAD_S if time_overhead is None else max(0.0, float(time_overhead))
         )
+        #: Cap on the *soft* limit: no new iteration is started after this many
+        #: seconds.  It is what keeps a phone cool - the hard limit still lets a
+        #: running iteration finish, so nothing is ever cut in half.
+        self.soft_time = None if soft_time is None else max(0.1, float(soft_time))
+        #: Budget for a narrow position (2-3 legal moves): such a position has no
+        #: long plan to find, so the full clock is wasted heat.
+        self.narrow_time = None if narrow_time is None else max(0.2, float(narrow_time))
         self.poll = max(0.1, poll)
         self.dry_run = dry_run
         self.max_errors = max(1, max_errors)
@@ -1102,7 +1111,10 @@ class CheckersBot:
         except (TypeError, ValueError):
             clock_s = None
         return plan_budget(
-            clock_s, overhead_s=self.time_overhead, ceiling_s=self.time_limit
+            clock_s,
+            overhead_s=self.time_overhead,
+            ceiling_s=self.time_limit,
+            soft_ceiling_s=self.soft_time,
         )
 
     def _search_move(self, board: Board, allowed=None) -> Optional[Move]:
@@ -1115,8 +1127,18 @@ class CheckersBot:
         """
         budget = self._budget
         if budget is not None:
-            self.ai.time_limit = budget.hard_s
-            self.ai.soft_limit = budget.soft_s
+            hard, soft = budget.hard_s, budget.soft_s
+            if self.narrow_time is not None:
+                moves = board.generate_moves()
+                if allowed is not None:
+                    moves = [move for move in moves if move in allowed] or moves
+                if len(moves) <= 3:
+                    # two or three legal moves: there is no long plan to find, so
+                    # the full clock would only heat the phone up
+                    hard = min(hard, self.narrow_time)
+                    soft = min(soft, max(0.2, self.narrow_time / 2))
+            self.ai.time_limit = hard
+            self.ai.soft_limit = soft
         outcome: Dict[str, object] = {}
         def work() -> None:
             try:
@@ -1130,7 +1152,9 @@ class CheckersBot:
         worker.start()
         self._watch_offers()                # anything already on screen
         while worker.is_alive():
-            worker.join(0.4)
+            # one board read per second is enough to catch the site's ~10 s stake
+            # dialog, and every read is a JavaScript round trip (Wi-Fi, CPU, heat)
+            worker.join(1.0)
             self._watch_offers()
         error = outcome.get("error")
         if error is not None:

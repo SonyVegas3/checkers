@@ -945,6 +945,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--time-overhead", type=float, default=None,
                         help="seconds of the clock reserved for reading the board, "
                              "probing and clicking (default: 6)")
+    parser.add_argument("--soft-time", type=float, default=None,
+                        help="stop starting new search iterations after this many "
+                             "seconds (keeps a phone cool; default: 75%% of --time)")
+    parser.add_argument("--narrow-time", type=float, default=None,
+                        help="search budget for positions with 2-3 legal moves "
+                             "(they need no long plan); default: no trim")
     parser.add_argument("--poll", type=float, default=1.0, help="seconds between board polls")
     parser.add_argument("--coins", type=int, default=0, choices=range(0, 6),
                         help="lobby stake: 0 = 50 coins, 1 = 5 000 … 5 = 10 000 000")
@@ -1155,6 +1161,8 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
                 should_lose=should_lose,
                 lobby_walk=lobby_walk,
                 time_overhead=args.time_overhead,
+                soft_time=getattr(args, "soft_time", None),
+                narrow_time=getattr(args, "narrow_time", None),
             )
             code = bot.run(max_moves=args.max_moves, once=args.once,
                            max_games=args.max_games)

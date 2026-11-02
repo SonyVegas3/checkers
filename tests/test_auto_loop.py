@@ -521,6 +521,26 @@ class AutoLoopTests(unittest.TestCase):
         self.assertTrue(site.lobby_opened)
 
 
+    def test_the_soft_and_narrow_budgets_reach_the_engine(self):
+        # the iOS app caps the soft limit (heat) and gives narrow positions a
+        # smaller budget - both must arrive in the engine
+        site = FakeSite([SiteState(_raw(False, 1))])
+        bot = self._bot(site, time_limit=8.0, soft_time=2.5, narrow_time=1.5)
+        from checkersbot.time_manager import plan_budget
+        bot._budget = plan_budget(None, ceiling_s=8.0, soft_ceiling_s=2.5)
+
+        wide = Board()                                   # 7 legal moves
+        bot._search_move(wide)
+        self.assertLessEqual(bot.ai.soft_limit, 2.5)
+        self.assertLessEqual(bot.ai.time_limit, 8.0)
+
+        narrow = Board.from_rows(["........"] * 7 + ["r......."], turn=RED,
+                                 rules="joker")          # exactly one move
+        bot._search_move(narrow)
+        self.assertLessEqual(bot.ai.time_limit, 1.5)     # the narrow budget wins
+        self.assertLessEqual(bot.ai.soft_limit, 1.5)
+
+
     def test_an_offer_is_answered_while_the_engine_thinks(self):
         board = Board()
         offered = SiteState(_raw(False, 10, opponent_coins=5000))
