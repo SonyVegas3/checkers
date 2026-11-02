@@ -290,26 +290,43 @@ screen brightness down or let the bot run on the PC instead.
    └────────────────────────────────────────┘
    ```
 
-   **Floating panel (new in `ios-30`).**  The panel is now pinned *natively* to
-   the content view (`overlay.pin_panel`): only the panel's own constraints are
-   swapped, the **WebView keeps its Toga constraints** (the ios-28 mistake of
-   pinning the WebView itself is gone for good - `WEBVIEW_PIN_ENABLED = False`).
+   **Floating panel (`ios-31`).**  The panel is pinned *natively* to the content
+   view (`overlay.pin_panel`): only the panel's own constraints are swapped, the
+   **WebView keeps its Toga constraints** (the ios-28 mistake of pinning the
+   WebView itself is gone for good - `WEBVIEW_PIN_ENABLED = False`).
+
+   **Why `ios-30` still showed the panel below the game:** `pin_panel` walked the
+   view tree with `view.superview()` / `view.window()`.  rubicon-objc exposes those
+   as **properties**, so every call raised `'UIView' object is not callable`;
+   `pin_panel` threw, the app caught it and quietly kept the Toga layout sheet.
+   All UIKit attribute access now goes through `overlay.read()` /
+   `overlay.number()` (property *or* method), `pin_panel` never raises (it returns
+   `{"error": ...}`), and three regression guards make the mistake impossible to
+   reintroduce: property-shaped fake views (`PropertyView`), a test that
+   `pin_panel` really pins such a view, and an AST check that no UIKit property is
+   called like a method in `overlay.py` / `app.py`.
+
    On every open/close the app sets the panel's height constraint, forces
-   `layoutIfNeeded`, asks Toga to re-lay the panel's children out, and 0.8 s later
-   **verifies** the panel's real height - if it is not what it should be, the pin
-   is rolled back to the plain layout automatically:
+   `layoutIfNeeded`, asks Toga to re-lay the panel's children out, and verifies the
+   panel's real height three times - rolling back to the plain layout if it is
+   wrong (and re-pinning if Toga ever re-claims the panel):
 
    ```
    overlay: panel floated above the game (height 44 pt)
-   overlay: panel height -> 304 pt
+   overlay: frames (sheet open)
+   overlay: webview 390x768 @ 0,59 | window 390x844
+   overlay: panel: parent=TogaContainerView z=1/2 hidden=False alpha=1.00 frame=390x304@0,540
+   overlay: game: parent=TogaContainerView z=0/2 hidden=False alpha=1.00 frame=390x768@0,59
+   overlay: panel pinned=True toga_constraints=none
+   overlay: თამაშის ზომა უცვლელია (webview 390x768 @ 0,59 | window 390x844)
    overlay: panel verified at 304 pt
    ```
 
    The white strip at the top is the window's `systemBackgroundColor` (white in
-   light mode) showing through the status-bar/Dynamic-Island area; the app paints
-   the window and the content view in its own dark colour (`overlay: background
-   painted dark - the safe-area strip is no longer white`), so the game looks
-   full-height without touching the safe areas.
+   light mode) showing through the status-bar/Dynamic-Island area: the app paints
+   the window and the content view in its own dark colour and logs the real inset
+   (`overlay: safe-area top=59 ...`) so the remaining space can be read off the log
+   instead of guessed.
 
    Diagnostics (fixed in `ios-30` - rubicon-objc exposes `frame`/`bounds` as
    *properties*, so calling them raised `'NSRect' object is not callable`) are

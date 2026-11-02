@@ -50,10 +50,15 @@ def _layouts() -> Any:
 
 
 def top_ancestor(view: Any) -> Any:
-    """Walk up to the outermost view (the window) - the pin target."""
+    """Walk up to the outermost view (the window) - the pin target.
+
+    ``superview`` is an Objective-C **property**; rubicon-objc exposes it as one, so
+    ``view.superview`` is correct and ``view.superview()`` raises
+    ``'UIView' object is not callable``.  ``read`` accepts either shape.
+    """
     seen = 0
     while view is not None and seen < 32:
-        parent = view.superview()
+        parent = read(view, "superview")
         if parent is None:
             return view
         view = parent
@@ -70,7 +75,7 @@ def host_view(widget_impl: Any) -> Optional[Any]:
         if native is not None:
             return native
     native = getattr(widget_impl, "native", None)
-    return native.superview() if native is not None else None
+    return read(native, "superview") if native is not None else None
 
 
 def anchor_view(view: Any) -> Any:
@@ -79,21 +84,18 @@ def anchor_view(view: Any) -> Any:
     Preferring the **root view controller's view** (a real layout container) over
     the raw ``UIWindow``: Auto Layout is much happier with a normal ``UIView`` as
     the common ancestor, and that view already has the window's bounds minus the
-    parts UIKit manages.
+    parts UIKit manages.  All four lookups go through :func:`read` because UIKit
+    declares them as properties (``window``, ``rootViewController``, ``view``) and
+    calling them raises ``'UIWindow' object is not callable`` - the exact bug that
+    kept the settings panel in the Toga layout on iOS builds <= ``ios-30``.
     """
-    try:
-        window = view.window()
-    except Exception:
-        window = None
+    window = read(view, "window")
     if window is not None:
-        try:
-            controller = window.rootViewController()
-            if controller is not None:
-                root = controller.view()
-                if root is not None:
-                    return root
-        except Exception:
-            pass
+        controller = read(window, "rootViewController")
+        if controller is not None:
+            root = read(controller, "view")
+            if root is not None:
+                return root
     return top_ancestor(view)
 
 
@@ -169,7 +171,7 @@ def bring_to_front(widget_impl: Any) -> bool:
     if native is None:
         return False
     try:
-        parent = native.superview()
+        parent = read(native, "superview")
         if parent is None:
             return False
         parent.bringSubviewToFront_(native)
@@ -184,12 +186,15 @@ def describe_pin(widget_impl: Any) -> str:
     if native is None:
         return "no native view"
     try:
-        frame = native.frame()
-        window = top_ancestor(native).frame()
+        frame = read(native, "frame")
+        window = read(top_ancestor(native), "frame")
         return (
-            f"webview {frame.size.width:.0f}x{frame.size.height:.0f} "
-            f"@ {frame.origin.x:.0f},{frame.origin.y:.0f} | "
-            f"window {window.size.width:.0f}x{window.size.height:.0f}"
+            f"webview {number(read(frame, 'size'), 'width'):.0f}"
+            f"x{number(read(frame, 'size'), 'height'):.0f} "
+            f"@ {number(read(frame, 'origin'), 'x'):.0f},"
+            f"{number(read(frame, 'origin'), 'y'):.0f} | "
+            f"window {number(read(window, 'size'), 'width'):.0f}"
+            f"x{number(read(window, 'size'), 'height'):.0f}"
         )
     except Exception as error:                  # pragma: no cover - device only
         return f"(cannot read the native frames: {error})"
@@ -258,6 +263,54 @@ def describe_view(view: Any, depth: int = 0) -> List[str]:
     return lines
 
 
+def describe_overlay(view: Any, label: str = "overlay") -> str:
+    """One line about a *single* view: parent, z-order, visibility and frame.
+
+    This is the report the panel needs: it says where the panel really lives
+    (which superview), whether it is on top (its index among its siblings), whether
+    it is visible at all, and its native frame - so "the panel is below the game"
+    can be read off one log line instead of being guessed.
+    """
+    if view is None:
+        return f"{label}: (no native view)"
+    try:
+        frame = read(view, "frame")
+        size = read(frame, "size", frame)
+        origin = read(frame, "origin", frame)
+        parent = read(view, "superview")
+        siblings = list(read(parent, "subviews", []) or []) if parent is not None else []
+        try:
+            order = siblings.index(view)
+        except ValueError:
+            order = -1
+        parent_name = "None"
+        if parent is not None:
+            parent_name = str(read(read(parent, "objc_class"), "name", type(parent).__name__))
+        return (
+            f"{label}: parent={parent_name} "
+            f"z={order}/{len(siblings)} "
+            f"hidden={bool(read(view, 'hidden', False, 'isHidden'))} "
+            f"alpha={float(read(view, 'alpha', 1.0)):.2f} "
+            f"frame={number(size, 'width'):.0f}x{number(size, 'height'):.0f}"
+            f"@{number(origin, 'x'):.0f},{number(origin, 'y'):.0f}"
+        )
+    except Exception as error:                  # pragma: no cover - device only
+        return f"{label}: (unreadable: {error})"
+
+
+def toga_active(panel_impl: Any) -> List[str]:
+    """Which of Toga's four constraints are active again (empty list = pinned)."""
+    active: List[str] = []
+    constraints = getattr(panel_impl, "constraints", None)
+    for name in CONSTRAINT_NAMES:
+        constraint = getattr(constraints, name, None) if constraints else None
+        if constraint is None:
+            continue
+        if bool(read(constraint, "isActive", False)):
+            active.append(name)
+    return active
+
+
 def diagnostics(view: Any, max_depth: int = 6, max_children: int = 6) -> List[str]:
     """Dump the native view hierarchy - the only way to see what UIKit really did.
 
@@ -308,15 +361,29 @@ def pin_panel(panel_impl: Any, height: float = 44.0, anchor: Any = None,
 
     Returns a state dict for :func:`set_panel_height` / :func:`restore_panel`, or
     ``{}`` when the panel cannot be floated (the caller keeps the plain layout).
+
+    This function **never raises**: the first shipped version let a rubicon-objc
+    ``'UIView' object is not callable`` (``superview`` is a property) escape, the
+    app caught it and silently fell back to the layout sheet - which is exactly why
+    the panel kept taking space below the game.  Failures are reported in the state
+    dict (``{"error": ...}``) so the caller can log them.
     """
+    try:
+        return _pin_panel(panel_impl, height=height, anchor=anchor, layouts=layouts)
+    except Exception as error:                  # never break the UI for this
+        return {"error": f"{type(error).__name__}: {error}"}
+
+
+def _pin_panel(panel_impl: Any, height: float = 44.0, anchor: Any = None,
+               layouts: Any = None) -> dict:
     layouts = layouts or _layouts()
     native = getattr(panel_impl, "native", None)
     if native is None:
         return {}
-    host = host_view(panel_impl)
     root = anchor if anchor is not None else safe_anchor(native)
     if root is None or root is native:
         return {}
+    host = host_view(panel_impl)
     constraints = getattr(panel_impl, "constraints", None)
     for name in CONSTRAINT_NAMES:                # out of the Toga layout
         constraint = getattr(constraints, name, None) if constraints else None
@@ -474,6 +541,8 @@ __all__ = [
     "pin_panel",
     "set_panel_height",
     "restore_panel",
+    "toga_active",
+    "describe_overlay",
     "layout_now",
     "paint_background",
     "top_ancestor",

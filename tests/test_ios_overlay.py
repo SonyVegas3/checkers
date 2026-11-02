@@ -35,6 +35,11 @@ class FakeConstraint:
     def setActive_(self, value) -> None:
         self.active = bool(value)
 
+    @property
+    def isActive(self):
+        """UIKit reads this as a property too (``overlay.toga_active``)."""
+        return self.active
+
 
 class OldConstraint(FakeConstraint):
     """A constraint without ``setActive_`` (the fallback path)."""
@@ -371,6 +376,150 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(view.backgroundColor, "colour")
         self.assertEqual(window.backgroundColor, "colour")
         self.assertAlmostEqual(made[0][0], 11 / 255, places=3)
+
+
+class PropertyView:
+    """A view shaped the way rubicon-objc really hands UIKit over: **properties**.
+
+    ``ios-30`` shipped ``view.superview()`` / ``view.window()`` / ``view.frame()``.
+    On the device those are properties, so every call raised
+    ``'UIView' object is not callable``; ``pin_panel`` threw, the app caught it and
+    silently kept the Toga layout sheet - the panel stayed *below* the game.  The
+    method-shaped :class:`FakeView` above never caught that, so this class exists.
+    """
+
+    def __init__(self, name, parent=None, children=None, size=(390, 844),
+                 origin=(0, 0)) -> None:
+        self.name = name
+        self.parent = parent
+        self.children = list(children or [])
+        self.constraints = []
+        self.front = None
+        self.translatesAutoresizingMaskIntoConstraints = True
+        self.clipsToBounds = False
+        self.hidden = False
+        self.isHidden = False
+        self.alpha = 1.0
+        self.objc_class = types.SimpleNamespace(name=name)
+        self.frame = types.SimpleNamespace(
+            size=types.SimpleNamespace(width=size[0], height=size[1]),
+            origin=types.SimpleNamespace(x=origin[0], y=origin[1]),
+        )
+        self.bounds = self.frame
+        self.window = None
+
+    # -- the property side of UIKit ---------------------------------------
+    @property
+    def superview(self):
+        return self.parent
+
+    @property
+    def subviews(self):
+        return self.children
+
+    @property
+    def safeAreaLayoutGuide(self):
+        return self
+
+    # -- the method side ---------------------------------------------------
+    def addConstraint(self, constraint) -> None:
+        self.constraints.append(constraint)
+
+    def removeConstraint(self, constraint) -> None:
+        if constraint in self.constraints:
+            self.constraints.remove(constraint)
+
+    def bringSubviewToFront_(self, view) -> None:
+        self.front = view
+
+    def layoutIfNeeded(self) -> None:
+        self.laid_out = True
+
+
+class PropertyShapedTests(unittest.TestCase):
+    """rubicon-objc properties must be *read*, never called (the ios-30 bug)."""
+
+    def test_top_ancestor_reads_a_property_superview(self):
+        root = PropertyView("root")
+        stage = PropertyView("stage", root)
+        game = PropertyView("game", stage)
+        self.assertIs(overlay.top_ancestor(game), root)
+
+    def test_anchor_view_prefers_the_root_view_controller_view(self):
+        controller_view = PropertyView("controller-view")
+        window = types.SimpleNamespace(
+            rootViewController=types.SimpleNamespace(view=controller_view))
+        view = PropertyView("game")
+        view.window = window                       # a property, like UIKit
+        self.assertIs(overlay.anchor_view(view), controller_view)
+
+    def test_host_view_reads_a_property_superview(self):
+        root = PropertyView("root")
+        sheet = PropertyView("sheet", root)
+        impl = types.SimpleNamespace(native=sheet, constraints=None)
+        self.assertIs(overlay.host_view(impl), root)
+
+    def test_bring_to_front_uses_the_property(self):
+        container = PropertyView("toga-container")
+        sheet = PropertyView("sheet", container)
+        self.assertTrue(overlay.bring_to_front(types.SimpleNamespace(native=sheet)))
+        self.assertIs(container.front, sheet)
+
+    def test_describe_overlay_reports_parent_and_z_order(self):
+        container = PropertyView("toga-container")
+        game = PropertyView("game", container)
+        sheet = PropertyView("sheet", container, size=(390, 304), origin=(0, 540))
+        container.children = [game, sheet]
+        line = overlay.describe_overlay(sheet, "panel")
+        self.assertIn("parent=toga-container", line)
+        self.assertIn("z=1/2", line)                # on top of the game
+        self.assertIn("hidden=False", line)
+        self.assertIn("frame=390x304@0,540", line)
+
+    def test_pin_panel_survives_a_property_shaped_device(self):
+        """The exact ios-30 failure: ``pin_panel`` raised instead of pinning."""
+        container = PropertyView("toga-container")
+        sheet = PropertyView("sheet", container)
+        impl = _impl(sheet, container)
+        state = overlay.pin_panel(impl, height=44.0, layouts=LAYOUTS)
+        self.assertNotIn("error", state)            # it used to blow up here
+        self.assertEqual(set(state["constraints"]),
+                         {"leading", "trailing", "bottom", "height"})
+        self.assertEqual(len(container.constraints), 4)   # added to the anchor
+        # Toga's four constraints are off -> the panel left the layout flow
+        self.assertFalse(any(c.active for c in (
+            impl.constraints.left_constraint, impl.constraints.top_constraint,
+            impl.constraints.width_constraint, impl.constraints.height_constraint)))
+        # ... and the height is ours to drive: 44 closed, 304 open. Never the game.
+        self.assertTrue(overlay.set_panel_height(state, 304.0))
+        self.assertEqual(state["constraints"]["height"].constant, 304.0)
+
+    def test_toga_active_lists_the_constraints_that_came_back(self):
+        container = PropertyView("toga-container")
+        sheet = PropertyView("sheet", container)
+        impl = _impl(sheet, container)
+        for name in overlay.CONSTRAINT_NAMES:       # what pin_panel() leaves behind
+            getattr(impl.constraints, name).setActive_(False)
+        self.assertEqual(overlay.toga_active(impl), [])
+        impl.constraints.top_constraint.setActive_(True)
+        self.assertEqual(overlay.toga_active(impl), ["top_constraint"])
+
+    def test_no_uikit_property_is_called_like_a_method(self):
+        """Source guard: ``view.frame()`` compiles here and crashes on the device."""
+        import ast
+
+        properties = {"superview", "window", "rootViewController", "subviews",
+                      "frame", "bounds", "safeAreaLayoutGuide", "isHidden", "alpha"}
+        for name in ("overlay.py", "app.py"):
+            path = ROOT / "src" / "checkersbot_ios" / name
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr in properties:
+                    self.fail(f"{name}:{node.lineno} calls {func.attr}() like a method "
+                              "- UIKit exposes it as a property")
 
 
 if __name__ == "__main__":

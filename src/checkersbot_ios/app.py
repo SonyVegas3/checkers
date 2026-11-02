@@ -181,6 +181,19 @@ def push_live_settings(bot: Any, settings: dict) -> list:
     return applied
 
 
+def _safe_area(view: Any) -> str:
+    """``overlay: safe-area top=59 left=0 bottom=34 right=0`` - the header strip.
+
+    The white band at the top of earlier builds was the window background showing
+    through the status-bar / Dynamic-Island inset.  Logging the real inset is what
+    tells us how much space the game loses at the top, instead of guessing.
+    """
+    insets = overlay.read(view, "safeAreaInsets")
+    return ("overlay: safe-area top=%.0f left=%.0f bottom=%.0f right=%.0f"
+            % (overlay.number(insets, "top"), overlay.number(insets, "left"),
+               overlay.number(insets, "bottom"), overlay.number(insets, "right")))
+
+
 class CheckersBotApp(toga.App):
     """A checkers board in a WebView, with the engine playing it."""
 
@@ -322,13 +335,18 @@ class CheckersBotApp(toga.App):
 
     # -- native overlay (the panel, never the game) ----------------------
     def _install_overlay(self, force: bool = False) -> bool:
-        """Float the *panel* above the game - opt-in, never touches the WebView.
+        """Float the *panel* above the game - never touches the WebView.
 
         The ios-28 experiment pinned the **WebView** to the window and broke the
         screen; :attr:`WEBVIEW_PIN_ENABLED` therefore stays ``False`` forever.  The
         panel pin (:func:`overlay.pin_panel`) only swaps the panel's own
-        constraints, so the game keeps its layout; it is off until a device log
-        proves the Toga child relayout (see :attr:`PANEL_OVERLAY_ENABLED`).
+        constraints, so the game keeps its frame.
+
+        The style height is set **before** the pin: writing a Toga style afterwards
+        triggers a layout pass, and a layout pass that re-assigns the widget's
+        container makes Toga re-create its four constraints
+        (``Constraints.container`` setter -> ``constraints_created = False``), which
+        would put the panel straight back into the layout flow.
         """
         if self._panel_state and not force:
             return True
@@ -338,22 +356,27 @@ class CheckersBotApp(toga.App):
                 self.log_line("overlay: off - the sheet uses the Toga layout "
                               "(the game shrinks while it is open)")
             return False
+        self.sheet.style.height = SHEET_BAR_H     # 1) layout reserves the bar only
         try:
             state = overlay.pin_panel(self.sheet._impl, height=self._panel_height())
         except Exception as error:               # never break the app for this
             self.log_line(f"! overlay: panel pin failed: {error}")
+            return False
+        if state.get("error"):
+            self.log_line(f"! overlay: the panel could not be floated ({state['error']})"
+                          " - keeping the layout sheet")
             return False
         if not state:
             self.log_line("! overlay: the panel could not be floated - keeping the "
                           "layout sheet")
             return False
         self._panel_state = state
-        self.sheet.style.height = SHEET_BAR_H     # the layout must not reserve more
         overlay.bring_to_front(self.sheet._impl)
         self.log_line("overlay: panel floated above the game "
                       f"(height {state['height']:.0f} pt)")
-        try:                                      # check it once UIKit has laid out
-            self.loop.call_later(0.8, self._verify_panel)
+        self._log_frames("panel floated")
+        try:                                      # check once UIKit has laid out
+            self.loop.call_later(0.8, self._verify_panel, 1)
         except Exception:
             pass
         return True
@@ -377,6 +400,20 @@ class CheckersBotApp(toga.App):
         state = getattr(self, "_panel_state", None)
         if not state:
             return
+        # Toga re-creates its four constraints whenever the widget's container is
+        # re-assigned; if that happened, put the panel back out of the layout flow.
+        try:
+            stolen = overlay.toga_active(self.sheet._impl)
+        except Exception:
+            stolen = []
+        if stolen:
+            self.log_line(f"overlay: Toga took the panel back ({', '.join(stolen)}) "
+                          "- re-pinning")
+            self._panel_state = {}
+            if self._install_overlay(force=True):
+                state = self._panel_state
+            else:
+                return
         target = self._panel_height()
         overlay.set_panel_height(state, target)
         overlay.layout_now(state.get("anchor") or self.webview._impl.native)
@@ -386,8 +423,12 @@ class CheckersBotApp(toga.App):
             pass
         self.log_line(f"overlay: panel height -> {target:.0f} pt")
 
-    def _verify_panel(self) -> None:
-        """Roll back to the layout sheet if the floated panel is not where it should be."""
+    def _verify_panel(self, attempt: int = 1) -> None:
+        """Roll back to the layout sheet if the floated panel is not where it should be.
+
+        Verified three times before giving up: UIKit needs a couple of run-loop
+        turns, and a single early check was rolling back a perfectly good pin.
+        """
         state = getattr(self, "_panel_state", None)
         if not state:
             return
@@ -398,9 +439,40 @@ class CheckersBotApp(toga.App):
         if expected and height > 0 and abs(height - expected) <= 2:
             self.log_line(f"overlay: panel verified at {height:.0f} pt")
             return
+        if attempt < 3:
+            self.log_line(f"overlay: panel still {height:.0f} pt instead of "
+                          f"{expected:.0f} - re-checking ({attempt + 1}/3)")
+            try:
+                self.loop.call_later(1.0, self._verify_panel, attempt + 1)
+            except Exception:
+                pass
+            return
         self.log_line(f"! overlay: panel is {height:.0f} pt instead of {expected:.0f} "
-                      "- rolling back to the layout sheet")
+                      "after 3 checks - rolling back to the layout sheet")
         self._release_panel()
+
+    def _log_frames(self, why: str) -> None:
+        """WebView + panel frames, parent, z-order and visibility - before/after.
+
+        This is the evidence that the game keeps *exactly* the same frame while the
+        panel opens and closes, and that the panel is really a sibling-on-top rather
+        than a row below the game.
+        """
+        if sys.platform != "ios":
+            return
+        try:
+            self.log_line(f"overlay: frames ({why})")
+            self.log_line("overlay: " + self._frame_report())
+            self.log_line(overlay.describe_overlay(
+                getattr(self.sheet._impl, "native", None), "overlay: panel"))
+            self.log_line(overlay.describe_overlay(
+                getattr(self.webview._impl, "native", None), "overlay: game"))
+            active = overlay.toga_active(self.sheet._impl)
+            self.log_line("overlay: panel pinned=%s toga_constraints=%s"
+                          % (bool(getattr(self, "_panel_state", None)),
+                             ",".join(active) or "none"))
+        except Exception as error:               # logging must never break the UI
+            self.log_line(f"! overlay: frame report failed: {error}")
 
     def _release_panel(self) -> None:
         """Fall back to the plain layout if the floated panel looks wrong."""
@@ -422,15 +494,16 @@ class CheckersBotApp(toga.App):
             return
         try:
             native = self.webview._impl.native
-            try:                                  # the window shows *everything*
-                top = native.window() or overlay.top_ancestor(native)
-            except Exception:
-                top = overlay.top_ancestor(native)
+            # ``window`` is a property; reading it as a method raised
+            # "'UIWindow' object is not callable" (the same bug class as superview)
+            top = overlay.read(native, "window") or overlay.top_ancestor(native)
             lines = [f"overlay: diagnostics ({why})",
                      f"overlay: sheet display={self.sheet.style.display} "
                      f"body={self.body.style.display} "
                      f"log={self.log_view.style.display}",
-                     f"overlay: panel pinned={bool(self._panel_state)}"]
+                     f"overlay: panel pinned={bool(self._panel_state)}",
+                     overlay.describe_pin(self.webview._impl),
+                     _safe_area(top)]
             lines += overlay.diagnostics(top, max_depth=5)
             for line in lines:
                 self.log_line(line)
@@ -509,17 +582,24 @@ class CheckersBotApp(toga.App):
             self.log_line(f"! overlay: თამაშის ზომა შეიცვალა ({before} -> {after})")
         else:
             self.log_line(f"overlay: თამაშის ზომა უცვლელია ({after})")
+        # where the panel and the game really are after this transition
+        self._log_frames("sheet " + ("open" if opening else "closed"))
         # one hierarchy dump per toggle, so a wrong layout can be diagnosed from
         # the log instead of guessed (see _log_diagnostics)
         self._log_diagnostics("sheet " + ("open" if opening else "closed"))
 
     def on_toggle_log(self, widget=None, **kwargs) -> None:
-        """Show/hide the log viewer (works with the settings sheet closed too)."""
+        """Show/hide the log viewer (works with the settings sheet closed too).
+
+        The log is its own collapsible overlay section: it grows the floating panel
+        downwards, it never reserves permanent screen space.
+        """
         opening = self.log_view.style.display == "none"
         self.log_view.style.display = "pack" if opening else "none"
         self._sync_panel_height()
         if opening:
             self._flush_log()
+        self._log_frames("log " + ("open" if opening else "closed"))
 
     def _show_hint(self, text: str) -> None:
         hint = getattr(self, "hint", None)
