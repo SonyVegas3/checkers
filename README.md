@@ -276,28 +276,47 @@ screen brightness down or let the bot run on the PC instead.
 1. Open the app and sign in on jokergame.cc inside it (the WebView keeps the
    cookies; the app never stores a password). You do **not** have to open a
    table: the bot walks the lobby itself.
-2. Press **▶ დაწყება**. It finds an opponent at the cheapest table
-   (`STAKE = 0` → 50 coins), plays **depth 18 with 6 s per move** (`DEPTH` /
-   `SECONDS` / `SOFT_SECONDS` in `src/checkersbot_ios/app.py` — raise them for
-   more strength, lower them for a cooler phone) and
-   keeps going: when a game ends it waits up to 30 s for the **opponent** to offer
-   a rematch (it never offers one itself), accepts it if it comes, and otherwise
-   leaves the table and looks for a new opponent — until you press **■ გაჩერება**.
-   Under the two buttons are three **switches**, each on its own row (a row next
-   to the buttons would be pushed off a phone screen):
-   * **😞 ადამიანური მარცხი** — the bot loses the current game with
-     average-player moves, nothing is handed over for free (see "Losing on
-     purpose"); it goes back to off when the bot stops;
-   * **💰 ფსონის გაზრდაზე დათანხმება** — accept a raised stake (off by default:
-     a raise is refused);
-   * **🔁 ოპონენტის რემატჩის ლოდინი** — wait for the opponent's rematch offer
-     after every game (on by default; turn it off to leave the table immediately
-     and look for a new opponent).
+2. **The screen is the game.** The JokerGame WebView fills the whole window; the
+   controls live in a collapsible **bottom sheet** that is only a 50 pt bar while
+   it is closed, so the board is never covered and never scaled:
 
-   All three are read live: flipping one while the bot plays takes effect at the
-   next offer / next game, and the log shows their state at start and on change.
-3. The log under the board shows the same lines as the desktop bot.
-4. While the bot runs the app keeps the screen awake (`idleTimerDisabled`), so
+   ```
+   ┌────────────────────────────────────────┐
+   │                                        │
+   │        JokerGame (full screen)         │
+   │                                        │
+   ├────────────────────────────────────────┤
+   │  ⚙   ● მუშაობს              ▶    📜   │  ← the bar (50 pt)
+   └────────────────────────────────────────┘
+   ```
+
+   * **⚙** opens the settings sheet (groups: 🎚 ძრავა, 🎮 თამაში, 🧠 ქცევა,
+     🔍 დიაგნოსტიკა) and turns into **▾** to close it again;
+   * **●** is the live status: **მუშაობს / გაჩერებული / ელოდება / შეცდომა**
+     (green / grey / yellow / red), fed by the bot's own log lines;
+   * **▶ / ■** starts and stops the bot;
+   * **📜** shows/hides the log viewer (it also opens with the sheet closed).
+
+   Opening or closing the sheet only hides and shows widgets of the sheet: the
+   WebView is never re-created, reloaded or zoomed, so the game simply gets its
+   space back. Only **⟲ ლობი** reloads the page.
+3. The sheet holds every setting the bot has — **სიძლიერე (სიღრმე)**,
+   **წამი/სვლა**, **რბილი ლიმიტი**, **poll**, **მაქს. თამაში / მაქს. სვლა**,
+   **რემატჩის / ჩატის ლოდინი**, **ფსონი**, and the switches
+   **⏱ ადამიანური ფიქრი · 😞 მარცხი · 💰 ფსონის გაზრდა · 🔁 ავტო-რემატჩი ·
+   👁 dry-run · 📋 დაფის ტრეისი (opponent answers) · 🔎 probe**.
+   Everything is applied to the **running** bot the moment it changes (the hint
+   under the controls confirms it) — no restart, no page reload. The only
+   exceptions are **მაქს. თამაში** and **მაქს. სვლა**, which are arguments of
+   `bot.run()`: changing them shows “⚠ … შემდეგ გაშვებაზე შევა ძალაში”, and
+   **↻ განახლება** restarts the bot thread (the game page keeps running) to pick
+   them up.
+4. It plays **depth 18 with 6 s per move** (`DEPTH` / `SECONDS` /
+   `SOFT_SECONDS` in `src/checkersbot_ios/app.py` — raise them for more strength,
+   lower them for a cooler phone) and keeps going: when a game ends it waits up
+   to 30 s for the **opponent** to offer a rematch (it never offers one itself),
+   accepts it if it comes, and otherwise leaves the table and looks for a new
+   opponent — until you press **■**.
    the game continues when nobody touches the phone. iOS suspends apps that go
    to the background, so **closing the app pauses the game** — a bot that has to
    keep playing while the phone is in your pocket needs to run on a PC/server.

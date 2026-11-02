@@ -22,6 +22,11 @@ from checkersbot.bot import CheckersBot        # noqa: E402
 from checkersbot.site import SiteError         # noqa: E402
 from checkersbot_ios.site import WebViewSite   # noqa: E402
 
+try:                                           # the UI module needs Toga (device only)
+    from checkersbot_ios import app as ios_app
+except Exception:                              # pragma: no cover - no Toga here
+    ios_app = None
+
 try:                                           # optional: only the browser tests need it
     from playwright.sync_api import sync_playwright
 
@@ -221,6 +226,108 @@ class MockWebViewTests(unittest.TestCase):
         code = bot.run(max_moves=1)
         self.assertEqual(code, 0)
         self.assertEqual(bot.moves_played, 1)
+
+
+class _FakeBot:
+    """Just enough of ``CheckersBot`` for the live-settings test."""
+
+    class _AI:
+        max_depth = 18
+
+    def __init__(self) -> None:
+        self.ai = self._AI()
+        self.time_limit = 6.0
+        self.soft_time = 3.0
+        self.poll = 1.0
+        self.rematch_wait = 30.0
+        self.chat_wait = 5.0
+        self.coins = 0
+        self.dry_run = False
+        self.trace_board = False
+        self.use_probe = True
+        self.accept_stake = False
+        self.rematch = True
+
+
+@unittest.skipIf(ios_app is None, "toga is not installed in this environment")
+class IosSheetSettingsTests(unittest.TestCase):
+    """The sheet's settings really reach a *running* bot (no restart/reload)."""
+
+    def test_live_settings_are_written_into_the_bot(self):
+        bot = _FakeBot()
+        settings = dict(ios_app.DEFAULT_SETTINGS)
+        settings.update({"strength": 12, "seconds": 8.5, "soft": 4.0, "poll": 0.5,
+                         "rematch_wait": 12, "chat_wait": 3, "stake": 2,
+                         "dry_run": 1, "trace": 1, "probe": 0,
+                         "accept_stake": 1, "auto_rematch": 0})
+        applied = ios_app.push_live_settings(bot, settings)
+        self.assertEqual(bot.ai.max_depth, 12)
+        self.assertEqual(bot.time_limit, 8.5)
+        self.assertEqual(bot.soft_time, 4.0)
+        self.assertEqual(bot.poll, 0.5)
+        self.assertEqual(bot.rematch_wait, 12.0)
+        self.assertEqual(bot.chat_wait, 3.0)
+        self.assertEqual(bot.coins, 2)
+        self.assertTrue(bot.dry_run)
+        self.assertTrue(bot.trace_board)
+        self.assertFalse(bot.use_probe)
+        self.assertTrue(bot.accept_stake)
+        self.assertFalse(bot.rematch)
+        for key in ("strength", "seconds", "soft", "poll", "dry_run", "trace"):
+            self.assertIn(key, applied)
+
+    def test_restart_only_settings_are_not_pretended_to_be_live(self):
+        bot = _FakeBot()
+        settings = dict(ios_app.DEFAULT_SETTINGS)
+        settings.update({"max_games": 5, "max_moves": 40})
+        applied = ios_app.push_live_settings(bot, settings)
+        self.assertNotIn("max_games", applied)
+        self.assertNotIn("max_moves", applied)
+        self.assertFalse(hasattr(bot, "max_games"))     # nothing was written
+        for key in ios_app.RESTART_KEYS:
+            self.assertTrue(ios_app.restart_only(key))
+
+    def test_every_setting_from_the_brief_is_exposed(self):
+        for key in ("strength", "seconds", "poll", "max_games", "max_moves",
+                    "dry_run", "trace", "think", "lose", "accept_stake",
+                    "auto_rematch", "probe", "rematch_wait", "chat_wait", "stake"):
+            self.assertIn(key, ios_app.DEFAULT_SETTINGS)
+        # the defaults keep the current behaviour
+        self.assertEqual(ios_app.DEFAULT_SETTINGS["strength"], float(ios_app.DEPTH))
+        self.assertEqual(ios_app.DEFAULT_SETTINGS["seconds"], ios_app.SECONDS)
+        self.assertEqual(ios_app.DEFAULT_SETTINGS["accept_stake"], 0.0)
+        self.assertEqual(ios_app.DEFAULT_SETTINGS["auto_rematch"], 1.0)
+
+    def test_the_status_indicator_follows_the_bot(self):
+        self.assertEqual(ios_app.state_text("running"), "● მუშაობს")
+        self.assertEqual(ios_app.state_text("stopped"), "● გაჩერებული")
+        self.assertEqual(ios_app.state_from_log("! boom"), "error")
+        self.assertEqual(ios_app.state_from_log("waiting for the opponent"), "waiting")
+        self.assertEqual(ios_app.state_from_log("thinking 3.0s ... (thinking)"),
+                         "waiting")
+        self.assertEqual(ios_app.state_from_log("our move: c3-d4"), "running")
+        self.assertIsNone(ios_app.state_from_log("ლოგის ხაზი"))
+
+    def test_the_game_widget_survives_the_sheet(self):
+        """Opening/closing the sheet must never re-create or resize the WebView."""
+        try:
+            app = ios_app.CheckersBotApp()
+            app._build_ui()
+        except Exception as error:                     # no display / app already made
+            self.skipTest(f"cannot build the UI here: {error}")
+        webview = app.webview
+        self.assertEqual(app.stage.children[0], webview)      # full-height stage
+        self.assertEqual(app.stage.style.flex, 1)
+        app.on_toggle_sheet()
+        self.assertEqual(app.body.style.display, "pack")
+        app.on_toggle_sheet()
+        self.assertEqual(app.body.style.display, "none")
+        self.assertIs(app.webview, webview)                   # same object, no reload
+        self.assertEqual(app.stage.children[0], webview)
+        app.on_toggle_log()
+        self.assertEqual(app.log_view.style.display, "pack")
+        app.on_toggle_log()
+        self.assertEqual(app.log_view.style.display, "none")
 
 
 if __name__ == "__main__":

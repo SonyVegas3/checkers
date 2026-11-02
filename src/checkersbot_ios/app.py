@@ -48,6 +48,125 @@ THINK_DELAYS = (2.0, 3.0, 5.0, 7.0)   # human-like pauses (the first move is qui
 QUICK_DELAYS = (1.0, 2.0, 3.0)        # used when the move was obvious (e.g. a capture)
 STAKE = 0            # lobby stake: 0 = 50 coins (the cheapest table)
 
+#: The collapsible sheet: the game keeps the whole screen, the controls only take
+#: the height of the bar while they are closed.
+SHEET_BAR_H = 50
+SHEET_BODY_H = 360
+LOG_VIEW_H = 120
+
+#: Every setting the panel owns, with its default.  ``CheckersBot`` is built from
+#: this dict, and :func:`push_live_settings` copies it into a *running* bot.
+DEFAULT_SETTINGS = {
+    "strength": float(DEPTH),       # engine depth cap
+    "seconds": float(SECONDS),      # hard limit per move
+    "soft": float(SOFT_SECONDS),    # soft limit (heat)
+    "poll": float(BOARD_POLL_S),    # board polling interval
+    "max_games": 0.0,               # 0 = unlimited   (needs a restart)
+    "max_moves": 0.0,               # 0 = unlimited   (needs a restart)
+    "rematch_wait": 30.0,
+    "chat_wait": 5.0,
+    "stake": float(STAKE),
+    "think": 1.0,                   # human "thinking" pauses
+    "lose": 0.0,                    # lose on purpose (average-player moves)
+    "accept_stake": 0.0,            # agree to a raised stake
+    "auto_rematch": 1.0,            # wait for the opponent's rematch offer
+    "dry_run": 0.0,                 # read-only mode, no clicks
+    "trace": 0.0,                   # log the board / the opponent's answers
+    "probe": 1.0,                   # verify every move against the site
+}
+
+#: Settings that are copied into the running bot immediately.
+LIVE_KEYS = (
+    "strength", "seconds", "soft", "poll", "rematch_wait", "chat_wait", "stake",
+    "think", "lose", "accept_stake", "auto_rematch", "dry_run", "trace", "probe",
+)
+
+#: Settings the bot reads once, when the run starts: they need a restart.
+RESTART_KEYS = ("max_games", "max_moves")
+
+#: Live status indicator: name -> (dot colour, Georgian label).
+STATES = {
+    "stopped": ("#95a5a6", "გაჩერებული"),
+    "running": ("#2ecc71", "მუშაობს"),
+    "waiting": ("#f1c40f", "ელოდება"),
+    "error": ("#e74c3c", "შეცდომა"),
+}
+
+#: Log lines that mean "the bot is doing nothing but waiting for the opponent".
+WAITING_MARKERS = ("waiting", "ველოდებით", "no table yet", "thinking", "სვლას")
+
+
+def state_text(state: str) -> str:
+    """``● მუშაობს`` - the small status pill in the bar."""
+    colour, label = STATES.get(state, STATES["stopped"])
+    return f"● {label}"
+
+
+def state_color(state: str) -> str:
+    colour, _ = STATES.get(state, STATES["stopped"])
+    return colour
+
+
+def state_from_log(line: str) -> Optional[str]:
+    """Guess the status from one log line (the bot's own words)."""
+    text = str(line)
+    if text.lstrip().startswith("!"):
+        return "error"
+    lowered = text.lower()
+    if any(marker in text or marker in lowered for marker in WAITING_MARKERS):
+        return "waiting"
+    if "our move" in lowered:
+        return "running"
+    return None
+
+
+def restart_only(name: str) -> bool:
+    """Does changing ``name`` need the bot to be restarted?"""
+    return name in RESTART_KEYS
+
+
+def push_live_settings(bot: Any, settings: dict) -> list:
+    """Copy the panel's settings into a *running* bot and say what was applied.
+
+    Only :data:`LIVE_KEYS` are copied - every one of them is read by the bot on
+    its next loop iteration (``poll``), move (``seconds``/``soft``/``dry_run``...)
+    or game (``rematch_wait``), so no restart and no page reload is needed.
+    ``max_games``/``max_moves`` are arguments of :meth:`CheckersBot.run`; they are
+    deliberately **not** applied here (the UI says so instead).
+    """
+    if bot is None:
+        return []
+    applied: list = []
+    engine_map = {
+        "strength": ("ai", "max_depth", int),
+        "seconds": (None, "time_limit", float),
+        "soft": (None, "soft_time", float),
+        "poll": (None, "poll", float),
+        "rematch_wait": (None, "rematch_wait", float),
+        "chat_wait": (None, "chat_wait", float),
+        "stake": (None, "coins", int),
+        "dry_run": (None, "dry_run", bool),
+        "trace": (None, "trace_board", bool),
+        "probe": (None, "use_probe", bool),
+        "accept_stake": (None, "accept_stake", bool),
+        "auto_rematch": (None, "rematch", bool),
+    }
+    for key in LIVE_KEYS:
+        if key not in settings:
+            continue
+        value = settings[key]
+        if key in engine_map:
+            owner, attribute, caster = engine_map[key]
+            target = getattr(bot, owner) if owner else bot
+            try:
+                setattr(target, attribute, caster(value))
+                applied.append(key)
+            except Exception:                    # a missing attribute, a bad cast
+                continue
+        elif key == "think":
+            applied.append(key)                  # the app polls its own flag
+    return applied
+
 
 class CheckersBotApp(toga.App):
     """A checkers board in a WebView, with the engine playing it."""
@@ -65,11 +184,17 @@ class CheckersBotApp(toga.App):
         self._stop = threading.Event()
         self._lose_flag = False
         #: off by default: a bigger stake costs coins, so the bot only agrees when
-        #: the "💰 ფსონის გაზრდა" switch next to the buttons is on
+        #: the "💰 ფსონის გაზრდაზე დათანხმება" switch is on
         self._accept_stake = False
         #: wait for the opponent's rematch offer after every game (the 🔁 switch
         #: turns that waiting off; the bot never offers a rematch itself)
         self._auto_rematch = True
+        #: human "thinking" pauses (the ⏱ switch) - polled by the bot
+        self._human_think = True
+        #: every setting the sheet owns; ``push_live_settings`` copies it into the
+        #: running bot, so the sheet is the single source of truth
+        self.cfg: dict = dict(DEFAULT_SETTINGS)
+        self._state_name = "stopped"
         #: log lines waiting for the next (throttled) log-view redraw
         self._pending_log: list = []
         self._log_refresh_at = None
@@ -84,55 +209,298 @@ class CheckersBotApp(toga.App):
             return self._boot_error(traceback.format_exc())
 
     def _build_ui(self) -> Any:
-        self.start_button = toga.Button(
-            "▶ დაწყება", on_press=self.on_start, style=Pack(width=130, margin=4)
-        )
-        self.reload_button = toga.Button(
-            "↻ განახლება", on_press=self.on_reload, style=Pack(width=130, margin=4)
-        )
-        # One switch per row, text inside the switch: three buttons already fill
-        # the width of a phone, so anything next to them gets pushed off screen.
-        self.lose_switch = toga.Switch(
-            "😞 ადამიანური მარცხი",
-            value=False,
-            on_change=self.on_lose_toggle,
-            style=Pack(margin=(8, 8, 0, 8)),
-        )
-        self.stake_switch = toga.Switch(
-            "💰 ფსონის გაზრდაზე დათანხმება",
-            value=bool(self._accept_stake),
-            on_change=self.on_stake_toggle,
-            style=Pack(margin=(8, 8, 0, 8)),
-        )
-        self.rematch_switch = toga.Switch(
-            "🔁 ოპონენტის რემატჩის ლოდინი",
-            value=bool(self._auto_rematch),
-            on_change=self.on_rematch_toggle,
-            style=Pack(margin=(8, 8, 2, 8)),
-        )
-        self.status = toga.Label(
-            "CheckersBot 2.0 — იტვირთება...", style=Pack(margin=(6, 6, 0, 6))
-        )
-        self.webview = toga.WebView(style=Pack(flex=1), url=DEFAULT_URL)
-        self.webview.on_webview_load = self.on_webview_load
-        self.log_view = toga.MultilineTextInput(
-            style=Pack(height=90, margin=6), readonly=True
-        )
+        """Full-screen game + a collapsible sheet that holds every control.
 
-        buttons = toga.Box(
-            style=Pack(direction=ROW),
-            children=[self.start_button, self.reload_button],
-        )
-        toggles = toga.Box(
-            style=Pack(direction=COLUMN),
-            children=[self.lose_switch, self.stake_switch, self.rematch_switch],
+        One window, two children: the ``stage`` (the WebView, ``flex=1``) and the
+        ``sheet``.  Closed, the sheet is only a 50 pt bar, so the game keeps ~93 %
+        of the screen (the old fixed panel took ~35 %).  Opening the sheet hides
+        and shows *widgets of the sheet* - the WebView is never re-created,
+        reloaded or zoomed, it simply gets its space back when the sheet closes.
+        """
+        self.cfg = dict(DEFAULT_SETTINGS)
+        self._state_name = "stopped"
+        self._style_book = self._sheet_styles()
+        self._build_game()
+        self._build_bar()
+        self._build_body()
+        self._build_log()
+        self._build_actions()
+        self.sheet = toga.Box(
+            style=Pack(direction=COLUMN, background_color="#111a22"),
+            children=[self.bar, self.body, self.log_view, self.actions],
         )
         root = toga.Box(
-            style=Pack(direction=COLUMN, flex=1, background_color="#101418"),
-            children=[self.status, buttons, toggles, self.webview, self.log_view],
+            style=Pack(direction=COLUMN, flex=1, background_color="#0b0f14"),
+            children=[self.stage, self.sheet],
         )
-        self.log_line("აპი გაშვებულია — გახსენი მაგიდა და დააჭირე „დაწყებას“")
+        self.log_line("აპი გაშვებულია — გახსენი მაგიდა, დააჭირე ▶-ს, ⚙ = პარამეტრები")
         return root
+
+    # -- building blocks -------------------------------------------------
+    def _build_game(self) -> None:
+        """The game keeps the whole screen; nothing is stacked above it."""
+        self.webview = toga.WebView(style=Pack(flex=1), url=DEFAULT_URL)
+        self.webview.on_webview_load = self.on_webview_load
+        self.stage = toga.Box(style=Pack(direction=COLUMN, flex=1),
+                              children=[self.webview])
+
+    def _build_bar(self) -> None:
+        """⚙ settings · ● status · ▶/■ start-stop · 📜 log - one 50 pt row."""
+        style = self._style_book
+        self.sheet_button = toga.Button(
+            "⚙", on_press=self.on_toggle_sheet,
+            style=Pack(width=52, margin=0),
+        )
+        self.status = toga.Label(
+            state_text("stopped"),
+            style=Pack(flex=1, margin=(0, 8, 0, 8), color=state_color("stopped"),
+                       font_size=13, font_weight="bold"),
+        )
+        self.start_button = toga.Button(
+            "▶", on_press=self.on_start, style=Pack(width=52, margin=0)
+        )
+        self.log_button = toga.Button(
+            "📜", on_press=self.on_toggle_log, style=Pack(width=52, margin=0)
+        )
+        self.bar = toga.Box(
+            style=Pack(direction=ROW, height=SHEET_BAR_H, background_color="#111a22",
+                       margin=(4, 6, 4, 6)),
+            children=[self.sheet_button, self.status, self.start_button, self.log_button],
+        )
+
+    def _build_log(self) -> None:
+        self.log_view = toga.MultilineTextInput(
+            readonly=True,
+            style=Pack(height=LOG_VIEW_H, display="none", margin=(0, 6, 4, 6),
+                       font_size=11),
+        )
+
+    def _build_actions(self) -> None:
+        style = self._style_book
+        self.refresh_button = toga.Button(
+            "↻ განახლება", on_press=self.on_refresh,
+            style=Pack(flex=1, margin=(0, 4, 0, 6)),
+        )
+        self.reset_button = toga.Button(
+            "⟲ ლობი", on_press=self.on_reload, style=Pack(width=110, margin=(0, 6, 0, 4))
+        )
+        self.actions = toga.Box(
+            style=Pack(direction=ROW, height=44, display="none"),
+            children=[self.refresh_button, self.reset_button],
+        )
+
+    def _sheet_styles(self) -> dict:
+        """Colours/spacing of the sheet in one place (dark, phone friendly)."""
+        return {
+            "group": {"background_color": "#16212b", "margin": (6, 6, 8, 6)},
+            "label": {"font_size": 12, "color": "#cfe3f5", "margin": (0, 6, 0, 0)},
+            "value": {"font_size": 12, "color": "#7fd1ff", "font_weight": "bold",
+                      "margin": (0, 0, 0, 6)},
+        }
+
+    # -- control handlers ------------------------------------------------
+    def _make_slider_handler(self, key: str, value_label: Any):
+        def handler(widget, **kwargs) -> None:
+            self.cfg[key] = float(widget.value)
+            value_label.text = self._format_value(key)
+            self._on_setting_changed(key)
+        return handler
+
+    def _make_number_handler(self, key: str):
+        def handler(widget, **kwargs) -> None:
+            try:
+                self.cfg[key] = float(widget.value or 0)
+            except (TypeError, ValueError):
+                return
+            self._on_setting_changed(key)
+        return handler
+
+    def _make_selection_handler(self, key: str, items: list):
+        def handler(widget, **kwargs) -> None:
+            try:
+                self.cfg[key] = float(items.index(widget.value))
+            except (ValueError, AttributeError):
+                return
+            self._on_setting_changed(key)
+        return handler
+
+    def _make_switch_handler(self, key: str):
+        def handler(widget, **kwargs) -> None:
+            self.cfg[key] = 1.0 if widget.value else 0.0
+            self._on_setting_changed(key)
+        return handler
+
+    # -- sheet / log toggles ---------------------------------------------
+    def on_toggle_sheet(self, widget=None, **kwargs) -> None:
+        """Open/close the settings body - the WebView keeps its page."""
+        opening = self.body.style.display == "none"
+        self.body.style.display = "pack" if opening else "none"
+        self.actions.style.display = "pack" if opening else "none"
+        self.sheet_button.text = "▾" if opening else "⚙"
+        if opening:
+            self._show_hint("")
+        self.log_line("⚙ პარამეტრები " + ("გაიხსნა" if opening else "დაიხურა"))
+
+    def on_toggle_log(self, widget=None, **kwargs) -> None:
+        """Show/hide the log viewer (works with the settings sheet closed too)."""
+        opening = self.log_view.style.display == "none"
+        self.log_view.style.display = "pack" if opening else "none"
+        if opening:
+            self._flush_log()
+
+    def _show_hint(self, text: str) -> None:
+        hint = getattr(self, "hint", None)
+        if hint is not None:
+            hint.text = text
+
+    def _on_setting_changed(self, key: str) -> None:
+        """A control moved: push it into the running bot, or say why not."""
+        if restart_only(key):
+            self._show_hint(
+                f"⚠ „{key}“ შემდეგ გაშვებაზე შევა ძალაში (გაშვებული ბოტი არ იცვლება)")
+            return
+        bot = self._bot
+        self._lose_flag = bool(self.cfg["lose"])
+        self._accept_stake = bool(self.cfg["accept_stake"])
+        self._auto_rematch = bool(self.cfg["auto_rematch"])
+        self._human_think = bool(self.cfg["think"])
+        if bot is None:
+            self._show_hint(
+                f"💾 {key} = {self._format_value(key)} — ბოტი გაჩერებულია, "
+                "გაშვებისას გამოყენდება")
+            return
+        applied = push_live_settings(bot, self.cfg)
+        self._show_hint(
+            f"✓ {key} = {self._format_value(key)} — მაშინვე მოქმედებს"
+            if key in applied else "")
+
+    def _set_state(self, state: str, detail: str = "") -> None:
+        """Update the ● indicator (Running / Stopped / Waiting / Error)."""
+        self._state_name = state
+        label = getattr(self, "status", None)
+        if label is not None:
+            label.text = state_text(state)
+            try:
+                label.style.color = state_color(state)
+            except Exception:                     # a backend without colour support
+                pass
+
+    def _build_body(self) -> None:
+        """Grouped settings in a touch-scrollable container (hidden by default)."""
+        groups = [
+            ("🎚 ძრავა", [
+                self._slider_row("strength", "სიძლიერე (სიღრმე)", 4, 24, 1,
+                                 "სიღრმის ზღვარი — მეტი = ძლიერი, ნელი"),
+                self._slider_row("seconds", "წამი/სვლა (ლიმიტი)", 1, 15, 0.5,
+                                 "მაქსიმუმ რამდენ ხანს ეძებს ძრავი ერთ სვლაზე"),
+                self._slider_row("soft", "რბილი ლიმიტი", 0.5, 10, 0.5,
+                                 "ამის შემდეგ ახალ ვარიანტს აღარ იწყებს — ტელეფონი ნაკლებად ცხელდება"),
+                self._slider_row("poll", "poll (წმ)", 0.3, 3, 0.1,
+                                 "რამდენ ხანში ერთხელ კითხულობს დაფას"),
+            ]),
+            ("🎮 თამაში", [
+                self._number_row("max_games", "მაქს. თამაში (0 = ∞)", 999),
+                self._number_row("max_moves", "მაქს. სვლა (0 = ∞)", 999),
+                self._slider_row("rematch_wait", "რემატჩის ლოდინი (წმ)", 5, 60, 5, ""),
+                self._slider_row("chat_wait", "ჩატის ლოდინი (წმ)", 2, 20, 1, ""),
+                self._selection_row("stake", "ფსონი"),
+            ]),
+            ("🧠 ქცევა", [
+                self._switch_row("think", "⏱ ადამიანური ფიქრი (2/3/5/7 წმ)"),
+                self._switch_row("lose", "😞 მარცხი (ადამიანურად)"),
+                self._switch_row("accept_stake", "💰 ფსონის გაზრდაზე დათანხმება"),
+                self._switch_row("auto_rematch", "🔁 ავტო-რემატჩი"),
+            ]),
+            ("🔍 დიაგნოსტიკა", [
+                self._switch_row("dry_run", "👁 მხოლოდ ჩვენება (dry-run, არ აჭერს)"),
+                self._switch_row("trace", "📋 დაფის ტრეისი + ოპონენტის პასუხები"),
+                self._switch_row("probe", "🔎 probe — სვლების შემოწმება საიტზე"),
+            ]),
+        ]
+        children: list = []
+        for title, rows in groups:
+            children.append(toga.Label(title, style=Pack(
+                font_size=13, font_weight="bold", color="#8fb8d8", margin=(10, 6, 2, 6))))
+            children.append(toga.Box(
+                style=Pack(direction=COLUMN, **self._style_book["group"]), children=rows))
+        self.hint = toga.Label("", style=Pack(font_size=11, color="#f1c40f",
+                                              margin=(6, 8, 0, 8)))
+        children.append(self.hint)
+        children.append(toga.Label(
+            "ცვლილებები მაშინვე მოქმედებს გაშვებულ ბოტზეც — გარდა „მაქს. თამაში / "
+            "მაქს. სვლა“, რომლებიც შემდეგ გაშვებაზე შედის ძალაში.",
+            style=Pack(font_size=10, color="#7f8f9f", margin=(4, 8, 8, 8))))
+        self.body = toga.Box(
+            style=Pack(direction=COLUMN, height=SHEET_BODY_H, display="none"),
+            children=[toga.ScrollContainer(
+                content=toga.Box(style=Pack(direction=COLUMN), children=children),
+                horizontal=False,
+                style=Pack(flex=1, background_color="#111a22"),
+            )],
+        )
+
+    # -- one row per setting ---------------------------------------------
+    def _slider_row(self, key: str, label: str, low: float, high: float, step: float,
+                    hint: str) -> Any:
+        value_label = toga.Label(self._format_value(key),
+                                 style=Pack(**self._style_book["value"]))
+        slider = toga.Slider(
+            value=float(self.cfg[key]), min=float(low), max=float(high),
+            on_change=self._make_slider_handler(key, value_label),
+            style=Pack(flex=1, margin=(0, 6, 0, 0)),
+        )
+        setattr(self, f"{key}_slider", slider)
+        head = toga.Box(
+            style=Pack(direction=ROW, align_items="center"),
+            children=[toga.Label(label, style=Pack(flex=1, **self._style_book["label"])),
+                      value_label],
+        )
+        children = [head, slider]
+        if hint:
+            children.append(toga.Label(hint, style=Pack(font_size=10, color="#7f8f9f")))
+        return toga.Box(style=Pack(direction=COLUMN, margin=(2, 0, 6, 0)),
+                        children=children)
+
+    def _number_row(self, key: str, label: str, high: int) -> Any:
+        field = toga.NumberInput(
+            value=int(self.cfg[key]), min=0, max=high, step=1,
+            on_change=self._make_number_handler(key), style=Pack(width=90),
+        )
+        setattr(self, f"{key}_input", field)
+        return toga.Box(
+            style=Pack(direction=ROW, align_items="center", margin=(2, 0, 6, 0)),
+            children=[toga.Label(label, style=Pack(flex=1, **self._style_book["label"])),
+                      field],
+        )
+
+    def _selection_row(self, key: str, label: str) -> Any:
+        items = ["50", "5 000", "50 000", "200 000", "1 000 000", "10 000 000"]
+        selection = toga.Selection(
+            items=items, value=items[int(self.cfg[key])],
+            on_change=self._make_selection_handler(key, items), style=Pack(width=140),
+        )
+        setattr(self, f"{key}_selection", selection)
+        return toga.Box(
+            style=Pack(direction=ROW, align_items="center", margin=(2, 0, 6, 0)),
+            children=[toga.Label(label, style=Pack(flex=1, **self._style_book["label"])),
+                      selection],
+        )
+
+    def _switch_row(self, key: str, label: str) -> Any:
+        switch = toga.Switch(
+            label, value=bool(self.cfg[key]),
+            on_change=self._make_switch_handler(key), style=Pack(margin=(2, 0, 2, 0)),
+        )
+        setattr(self, f"{key}_switch", switch)
+        return switch
+
+    def _format_value(self, key: str) -> str:
+        value = float(self.cfg.get(key, 0))
+        if key == "strength":
+            return f"{int(value)}"
+        if key in ("seconds", "soft"):
+            return f"{value:.1f}s"
+        return f"{value:.1f}"
 
     def _boot_error(self, text: str) -> Any:
         """Paint the traceback on the screen - a black window tells us nothing."""
@@ -204,10 +572,10 @@ class CheckersBotApp(toga.App):
     def _append_log(self, text: str) -> None:
         """Batch the log view: a Toga text view redraw costs real CPU on iOS."""
         view = getattr(self, "log_view", None)
-        status = getattr(self, "status", None)
         self._pending_log.append(text)
-        if status is not None:
-            status.text = text[:120]                 # cheap: only the last line
+        state = state_from_log(text)
+        if state is not None:
+            self._set_state(state)            # ● მუშაობს / ● ელოდება / ● შეცდომა
         if view is None or self._log_refresh_at is not None:
             return                                   # a refresh is already queued
         loop = self._loop
@@ -245,69 +613,100 @@ class CheckersBotApp(toga.App):
         except Exception as error:                  # never break the app for this
             self.log_line(f"  (screen-awake unavailable: {error})")
 
-    def on_start(self, widget, **kwargs) -> None:
+    def on_start(self, widget=None, **kwargs) -> None:
         self._capture_loop()
         if self._bot_thread is not None and self._bot_thread.is_alive():
             self._stop.set()
-            self.status.text = "ჩერდება..."
-            self.start_button.text = "… ჩერდება"
+            self.start_button.text = "…"
+            self._set_state("stopped")
+            self.log_line("… გაჩერების მოთხოვნა (მიმდინარე სვლის შემდეგ)")
             return
 
         self._stop = threading.Event()
-        self._lose_flag = False
+        self._lose_flag = bool(self.cfg["lose"])
         self.log_view.value = ""
-        self.start_button.text = "■ გაჩერება"
-        self.status.text = "ვეძებ მაგიდას..."
+        self.start_button.text = "■"
+        self._set_state("running")
 
         site = WebViewSite(self.evaluate, log=self.log_line, log_dir=self.paths.logs)
         bot = CheckersBot(
             site,
-            depth=DEPTH,
-            time_limit=SECONDS,
-            soft_time=SOFT_SECONDS,
+            depth=int(self.cfg["strength"]),
+            time_limit=float(self.cfg["seconds"]),
+            soft_time=float(self.cfg["soft"]),
             narrow_time=NARROW_SECONDS,
-            poll=BOARD_POLL_S,
+            poll=max(0.1, float(self.cfg["poll"])),
             # fail fast when no table is open (the panel's 120 s is pointless here)
             turn_timeout=25.0,
             think_delays=THINK_DELAYS,
             quick_delays=QUICK_DELAYS,
+            # the live switches are polled by the bot, so they work mid-game
+            should_think_delays=lambda: self._human_think,
+            rematch_wait=max(1.0, float(self.cfg["rematch_wait"])),
+            chat_wait=max(1.0, float(self.cfg["chat_wait"])),
             # the phone layout already fits; scaling it would only shrink the board
             apply_fit=False,
             # the app plays until it is stopped: rematch, then a new opponent
             lobby_walk=True,
-            coins=STAKE,
-            use_probe=True,
-            accept_stake=self._accept_stake,
-            # the switch is read before every offer, so it can be flipped mid-game
+            coins=int(self.cfg["stake"]),
+            use_probe=bool(self.cfg["probe"]),
+            trace_board=bool(self.cfg["trace"]),
+            dry_run=bool(self.cfg["dry_run"]),
+            accept_stake=bool(self.cfg["accept_stake"]),
             should_accept_stake=lambda: self._accept_stake,
-            rematch=self._auto_rematch,
+            rematch=bool(self.cfg["auto_rematch"]),
             should_rematch=lambda: self._auto_rematch,
             log=self.log_line,
             should_stop=self._stop.is_set,
             should_lose=lambda: self._lose_flag,
             log_dir=str(self.paths.logs),
         )
+        self._bot = bot
         self._bot_thread = threading.Thread(
             target=self._run_bot, args=(bot,), name="checkersbot", daemon=True
         )
-        self._bot = bot
         self._set_screen_awake(True)
         self._bot_thread.start()
-        self.log_line("ბოტი მუშაობს — თამაშობს უწყვეტად (რემატჩი ან ახალი ოპონენტი)")
         self.log_line(
-            "💰 ფსონის გაზრდაზე დათანხმება: "
-            + ("ჩართულია" if self._accept_stake else "გამორთულია (უარს იტყვის)")
+            "ბოტი მუშაობს — სიღრმე {}, {} წმ/სვლა (რბილი {}), poll {}".format(
+                int(self.cfg["strength"]), self.cfg["seconds"], self.cfg["soft"],
+                self.cfg["poll"])
         )
         self.log_line(
-            "🔁 ავტო-რემატჩი: "
-            + ("ჩართულია" if self._auto_rematch else "გამორთულია (ახალი ოპონენტი)")
+            "💰 ფსონის გაზრდა: " + ("ჩართულია" if self._accept_stake else "გამორთულია")
+            + " | 🔁 ავტო-რემატჩი: " + ("ჩართულია" if self._auto_rematch else "გამორთულია")
+            + " | 👁 dry-run: " + ("კი" if self.cfg["dry_run"] else "არა")
         )
-        self.status.text = "ვეძებ მაგიდას..."
+
+    def on_refresh(self, widget=None, **kwargs) -> None:
+        """↻ განახლება: restart the bot thread with the current settings.
+
+        The WebView is *not* touched - the game page keeps running, only the bot
+        is stopped and started again (needed by ``max_games`` / ``max_moves``).
+        """
+        if self._bot_thread is not None and self._bot_thread.is_alive():
+            self._stop.set()
+            self.log_line("↻ განახლება: ვაჩერებ ბოტს…")
+            self._restart_when_idle()
+            return
+        self.log_line("↻ ბოტი თავიდან იშვება (გვერდი არ იტვირთება)")
+        self.on_start()
+
+    def _restart_when_idle(self, attempt: int = 0) -> None:
+        if self._bot_thread is not None and self._bot_thread.is_alive() and attempt < 60:
+            loop = self._loop
+            if loop is not None and not loop.is_closed():
+                loop.call_later(0.5, self._restart_when_idle, attempt + 1)
+            return
+        self.on_start()
 
     def _run_bot(self, bot: CheckersBot) -> None:
         code = 1
         try:
-            code = bot.run()
+            code = bot.run(
+                max_moves=int(self.cfg.get("max_moves", 0) or 0),
+                max_games=int(self.cfg.get("max_games", 0) or 0),
+            )
         except SiteError as error:
             self.log_line(f"! {error}")
         except Exception as error:                  # never lose the UI thread
@@ -320,64 +719,21 @@ class CheckersBotApp(toga.App):
     def _bot_finished(self, code: int) -> None:
         self._set_screen_awake(False)
         self._lose_flag = False
-        try:                                       # the switch goes back to "off"
-            self.lose_switch.value = False
-        except Exception:
-            pass
-        self.start_button.text = "▶ დაწყება"
-        self.status.text = "დასრულდა" if code == 0 else f"შეჩერდა ({code})"
-
-    def on_lose_toggle(self, widget, **kwargs) -> None:
-        """Lose the running game with average-player moves, while the switch is on."""
-        value = getattr(widget, "value", None)
-        if value is None:
-            value = kwargs.get("value")
-        if value is None:
-            value = getattr(getattr(self, "lose_switch", None), "value", False)
-        self._lose_flag = bool(value)
-        if self._lose_flag:
-            if not (self._bot_thread is not None and self._bot_thread.is_alive()):
-                self.log_line("😞 მარცხი ჩართულია — ბოტის გაშვებისას ითამაშებს სუსტად")
-            else:
-                self.log_line("😞 ადამიანური მარცხი ჩართულია - ბოტი საშუალო დონეზე ითამაშებს")
-        else:
-            self.log_line("😞 ადამიანური მარცხი გამორთულია - ჩვეულებრივ ძალაზე თამაშობს")
-
-    def on_rematch_toggle(self, widget, **kwargs) -> None:
-        """Wait for the opponent's rematch offer only while this switch is on."""
-        value = getattr(widget, "value", None)
-        if value is None:
-            value = kwargs.get("value")
-        if value is None:
-            value = getattr(getattr(self, "rematch_switch", None), "value", True)
-        self._auto_rematch = bool(value)
-        bot = self._bot
-        if bot is not None:
-            bot.rematch = self._auto_rematch
-        if self._auto_rematch:
-            self.log_line("🔁 რემატჩის ლოდინი: ჩართულია (ოპონენტის შეთავაზებას ველოდები)")
-        else:
-            self.log_line("🔁 რემატჩის ლოდინი: გამორთულია (ახალ ოპონენტს ეძებს)")
-
-    def on_stake_toggle(self, widget, **kwargs) -> None:
-        """Agree to a bigger stake only while this switch is on."""
-        value = getattr(widget, "value", None)
-        if value is None:
-            value = kwargs.get("value")
-        if value is None:
-            value = getattr(getattr(self, "stake_switch", None), "value", False)
-        self._accept_stake = bool(value)
-        # the bot may already be running: it reads the flag before every offer
-        bot = self._bot
-        if bot is not None:
-            bot.accept_stake = self._accept_stake
-        if self._accept_stake:
-            self.log_line("💰 ფსონის გაზრდაზე დათანხმება: ჩართულია (დაეთანხმება)")
-        else:
-            self.log_line("💰 ფსონის გაზრდაზე დათანხმება: გამორთულია (უარს იტყვის)")
+        switch = getattr(self, "lose_switch", None)
+        if switch is not None:                     # the 😞 switch goes back to off
+            try:
+                switch.value = False
+            except Exception:
+                pass
+        self.cfg["lose"] = 0.0
+        self.start_button.text = "▶"
+        self._set_state("stopped" if code == 0 else "error")
+        self._show_hint(f"ბოტი გაჩერდა (კოდი {code})" if code else "")
 
     async def on_reload(self, widget, **kwargs) -> None:
+        """⟲ ლობი: reload the *page* (the only action that navigates the WebView)."""
         try:
+            self.log_line("⟲ გვერდი გადაიტვირთა (ლობი)")
             await self.webview.load_url(self.webview.url or DEFAULT_URL)
         except Exception as error:
             self.log_line(f"! {error}")
