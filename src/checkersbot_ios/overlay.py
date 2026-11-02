@@ -195,26 +195,63 @@ def describe_pin(widget_impl: Any) -> str:
         return f"(cannot read the native frames: {error})"
 
 
+def read(obj: Any, name: str, default: Any = None, *alternates: str) -> Any:
+    """Read a value whether UIKit exposes it as a property or as a method.
+
+    rubicon-objc hands back **structs as properties** (``view.frame`` is an
+    ``NSRect`` - calling it raises ``'NSRect' object is not callable``), while
+    some other attributes are methods.  This helper accepts both, plus alternate
+    spellings (``isHidden`` / ``hidden``).
+    """
+    for candidate in (name,) + alternates:
+        try:
+            value = getattr(obj, candidate)
+        except Exception:
+            continue
+        if callable(value):
+            try:
+                return value()
+            except Exception:
+                continue
+        return value
+    return default
+
+
+def number(value: Any, attribute: str, default: float = 0.0) -> float:
+    """``number(frame.size, 'width')`` - tolerant of struct/property shapes."""
+    try:
+        return float(getattr(value, attribute))
+    except Exception:
+        try:
+            return float(value[attribute])
+        except Exception:
+            return default
+
+
 def describe_view(view: Any, depth: int = 0) -> List[str]:
-    """One line per view: class, frame, bounds, clipping, hidden, alpha, insets."""
+    """One line per view: class, frame, bounds, clipping, hidden, alpha, subviews."""
     lines: List[str] = []
     try:
-        frame = view.frame()
-        bounds = view.bounds()
+        frame = read(view, "frame")
+        size = read(frame, "size", frame)
+        origin = read(frame, "origin", frame)
+        bounds = read(view, "bounds")
+        bsize = read(bounds, "size", bounds)
         name = type(view).__name__
         try:
-            name = str(view.objc_class.name)
+            name = str(read(read(view, "objc_class"), "name", name))
         except Exception:
             pass
+        subviews = read(view, "subviews", []) or []
         lines.append(
-            "  " * depth + f"{name} frame={frame.size.width:.0f}x{frame.size.height:.0f}"
-            f"@{frame.origin.x:.0f},{frame.origin.y:.0f}"
-            f" bounds={bounds.size.width:.0f}x{bounds.size.height:.0f}"
-            f" clip={bool(view.clipsToBounds)}"
-            f" hidden={bool(view.isHidden())}"
-            f" alpha={float(view.alpha()):.2f}"
-            f" opaque={bool(view.isOpaque())}"
-            f" subs={len(view.subviews())}"
+            "  " * depth
+            + f"{name} frame={number(size, 'width'):.0f}x{number(size, 'height'):.0f}"
+            f"@{number(origin, 'x'):.0f},{number(origin, 'y'):.0f}"
+            f" bounds={number(bsize, 'width'):.0f}x{number(bsize, 'height'):.0f}"
+            f" clip={bool(read(view, 'clipsToBounds', False))}"
+            f" hidden={bool(read(view, 'hidden', False, 'isHidden'))}"
+            f" alpha={float(read(view, 'alpha', 1.0)):.2f}"
+            f" subs={len(subviews)}"
         )
     except Exception as error:
         lines.append("  " * depth + f"(unreadable view: {error})")
@@ -232,17 +269,158 @@ def diagnostics(view: Any, max_depth: int = 6, max_children: int = 6) -> List[st
     stack = [(view, 0)]
     while stack:
         current, depth = stack.pop()
+        if current is None:
+            continue
         lines.extend(describe_view(current, depth))
-        if depth >= max_depth or current is None:
+        if depth >= max_depth:
             continue
         try:
-            children = list(current.subviews())
+            children = list(read(current, "subviews", []) or [])
         except Exception:
             continue
-        # deepest child last, so the output reads top-down like the screen
         for child in reversed(children[-max_children:]):
             stack.append((child, depth + 1))
     return lines
+
+
+def safe_anchor(view: Any) -> Any:
+    """The root controller's content view, or its safe-area layout guide."""
+    anchor = anchor_view(view)
+    try:
+        guide = getattr(anchor, "safeAreaLayoutGuide", None)
+        if callable(guide):
+            guide = guide()
+        if guide is not None:
+            return guide
+    except Exception:
+        pass
+    return anchor
+
+
+def pin_panel(panel_impl: Any, height: float = 44.0, anchor: Any = None,
+              layouts: Any = None) -> dict:
+    """Float a Toga box along the bottom of the screen, outside the layout flow.
+
+    Only the panel's **own** constraints (the ones against its Toga parent) are
+    deactivated - its children are untouched, so Toga keeps laying them out inside
+    the panel.  The panel gets four new constraints of ours (leading, trailing,
+    bottom, height) so the game is never pushed around.
+
+    Returns a state dict for :func:`set_panel_height` / :func:`restore_panel`, or
+    ``{}`` when the panel cannot be floated (the caller keeps the plain layout).
+    """
+    layouts = layouts or _layouts()
+    native = getattr(panel_impl, "native", None)
+    if native is None:
+        return {}
+    host = host_view(panel_impl)
+    root = anchor if anchor is not None else safe_anchor(native)
+    if root is None or root is native:
+        return {}
+    constraints = getattr(panel_impl, "constraints", None)
+    for name in CONSTRAINT_NAMES:                # out of the Toga layout
+        constraint = getattr(constraints, name, None) if constraints else None
+        if constraint is None:
+            continue
+        try:
+            constraint.setActive_(False)
+        except Exception:
+            try:
+                host.removeConstraint(constraint)
+            except Exception:
+                pass
+    try:
+        native.translatesAutoresizingMaskIntoConstraints = False
+    except Exception:
+        pass
+
+    created: dict = {}
+
+    def add(item_attribute: str, to_item: Any, to_attribute: str, constant: float):
+        constraint = layouts["constraint"].constraintWithItem(
+            native,
+            attribute__1=layouts[item_attribute],
+            relatedBy=layouts["equal"],
+            toItem=to_item,
+            attribute__2=layouts[to_attribute],
+            multiplier=1.0,
+            constant=constant,
+        )
+        root.addConstraint(constraint)
+        return constraint
+
+    # a self-referential bottom/top pair is how "height" is expressed on iOS
+    created["height"] = add("bottom", native, "top", float(height))
+    created["leading"] = add("left", root, "left", 0.0)
+    created["trailing"] = add("right", root, "right", 0.0)
+    created["bottom"] = add("bottom", root, "bottom", 0.0)
+    return {"constraints": created, "anchor": root, "height": float(height)}
+
+
+def set_panel_height(state: dict, height: float) -> bool:
+    """Resize the floating panel (44 pt closed, taller when the sheet is open)."""
+    try:
+        state["constraints"]["height"].constant = float(height)
+        state["height"] = float(height)
+        return True
+    except Exception:
+        return False
+
+
+def restore_panel(panel_impl: Any, state: dict) -> bool:
+    """Undo :func:`pin_panel`: back to the plain Toga layout (the safe fallback)."""
+    restored = False
+    for constraint in (state.get("constraints") or {}).values():
+        try:
+            constraint.setActive_(False)
+        except Exception:
+            pass
+    constraints = getattr(panel_impl, "constraints", None)
+    for name in CONSTRAINT_NAMES:
+        constraint = getattr(constraints, name, None) if constraints else None
+        if constraint is None:
+            continue
+        try:
+            constraint.setActive_(True)
+            restored = True
+        except Exception:
+            pass
+    return restored
+
+
+def layout_now(view: Any) -> bool:
+    """Force UIKit to apply pending constraints now (``layoutIfNeeded``)."""
+    try:
+        method = getattr(view, "layoutIfNeeded")
+        if callable(method):
+            method()
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def paint_background(view: Any, hex_color: str = "#0b0f14",
+                     color_factory: Any = None) -> bool:
+    """Paint a view (and its window) so the safe-area band is not glaring white."""
+    try:
+        if color_factory is None:
+            from toga_iOS.libs import UIColor      # noqa: PLC0415 - device only
+            color_factory = UIColor.colorWithRed_green_blue_alpha
+        red = int(hex_color[1:3], 16) / 255.0
+        green = int(hex_color[3:5], 16) / 255.0
+        blue = int(hex_color[5:7], 16) / 255.0
+        colour = color_factory(red, green, blue, 1.0)
+        view.backgroundColor = colour
+        try:
+            window = read(view, "window")
+            if window is not None:
+                window.backgroundColor = colour
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
 
 
 def install(webview_impl: Any, sheet_impl: Any = None, *,
@@ -289,7 +467,15 @@ __all__ = [
     "describe_pin",
     "describe_view",
     "diagnostics",
+    "read",
+    "number",
     "anchor_view",
+    "safe_anchor",
+    "pin_panel",
+    "set_panel_height",
+    "restore_panel",
+    "layout_now",
+    "paint_background",
     "top_ancestor",
     "host_view",
 ]

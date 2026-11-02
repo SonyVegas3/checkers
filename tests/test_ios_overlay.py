@@ -267,10 +267,33 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn("subs=2", text)                # root has stage + sheet
 
     def test_an_unreadable_view_does_not_raise(self):
-        broken = types.SimpleNamespace()
-        lines = overlay.diagnostics(broken, max_depth=1)
-        self.assertTrue(lines)
-        self.assertIn("unreadable", "\n".join(lines))
+        class Hostile:
+            def __getattr__(self, name):
+                raise RuntimeError("nope")
+
+        lines = overlay.diagnostics(Hostile(), max_depth=1)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("frame=0x0", lines[0])       # zeros, but never an exception
+
+    def test_frames_exposed_as_properties_are_read_too(self):
+        # rubicon-objc gives NSRect *properties*: ``view.frame()`` raises
+        # "'NSRect' object is not callable" - this is the ios-29 crash
+        frame = types.SimpleNamespace(
+            size=types.SimpleNamespace(width=390, height=752),
+            origin=types.SimpleNamespace(x=0, y=0),
+        )
+        view = types.SimpleNamespace(
+            frame=frame, bounds=frame, clipsToBounds=False, hidden=False,
+            alpha=1.0, subviews=[],
+        )
+        lines = overlay.describe_view(view)
+        self.assertIn("390x752", lines[0])
+        self.assertIn("clip=False", lines[0])
+
+    def test_a_method_style_view_still_works(self):
+        window, root, stage, sheet, webview = self._tree()
+        lines = overlay.describe_view(webview)
+        self.assertIn("frame=390x844", lines[0])   # FakeView exposes methods
 
     def test_the_deepest_views_are_included(self):
         window, root, stage, sheet, webview = self._tree()
@@ -279,12 +302,75 @@ class DiagnosticsTests(unittest.TestCase):
 
 
 class ShippedDefaultTests(unittest.TestCase):
-    """The risky native pin must not ship enabled without device proof."""
+    """The WebView pin stays off; the panel pin ships with a rollback guard."""
 
-    def test_the_overlay_is_off_by_default_in_the_app(self):
+    def test_the_webview_pin_is_never_used(self):
         source = (ROOT / "src" / "checkersbot_ios" / "app.py").read_text(encoding="utf-8")
-        self.assertIn("OVERLAY_ENABLED = False", source)
-        self.assertIn("enabled=bool(OVERLAY_ENABLED)", source)
+        # ios-28 pinned the WebView and broke the screen: that path stays off
+        self.assertIn("WEBVIEW_PIN_ENABLED = False", source)
+        self.assertIn("PANEL_OVERLAY_ENABLED = True", source)
+        # the panel pin must be verified and rolled back, never trusted blindly
+        self.assertIn("_verify_panel", source)
+        self.assertIn("_release_panel", source)
+
+
+class PanelTests(unittest.TestCase):
+    """The panel is floated the same way a bottom sheet would be: only its own
+    constraints are swapped, its children stay untouched."""
+
+    def _panel(self):
+        window, root, stage, sheet, webview = _tree()
+        guide = FakeView("safe-area")
+        guide.superview = lambda: root
+        root.safeAreaLayoutGuide = guide
+        sheet.window = lambda: window
+        window.rootViewController = lambda: types.SimpleNamespace(view=lambda: root)
+        impl = _impl(sheet, root)
+        return window, root, stage, sheet, webview, guide, impl
+
+    def test_the_panel_is_pinned_to_the_bottom_of_the_content_view(self):
+        window, root, stage, sheet, webview, guide, impl = self._panel()
+        state = overlay.pin_panel(impl, height=44.0, layouts=LAYOUTS)
+        self.assertTrue(state)
+        created = state["constraints"]
+        self.assertEqual(len(created), 4)                  # leading/trailing/bottom/height
+        self.assertEqual(created["height"].constant, 44.0)
+        # the panel is out of the Toga layout, the game's stage is not touched
+        for name in overlay.CONSTRAINT_NAMES:
+            self.assertFalse(getattr(impl.constraints, name).active)
+        self.assertEqual(len(stage.constraints), 0)
+        self.assertIs(state["anchor"], guide)              # respects the safe area
+
+    def test_the_panel_height_can_change_without_touching_the_game(self):
+        window, root, stage, sheet, webview, guide, impl = self._panel()
+        state = overlay.pin_panel(impl, height=44.0, layouts=LAYOUTS)
+        self.assertTrue(overlay.set_panel_height(state, 344.0))
+        self.assertEqual(state["constraints"]["height"].constant, 344.0)
+        self.assertEqual(len(stage.constraints), 0)        # WebView layout untouched
+
+    def test_restore_puts_the_panel_back_into_the_layout(self):
+        window, root, stage, sheet, webview, guide, impl = self._panel()
+        state = overlay.pin_panel(impl, height=44.0, layouts=LAYOUTS)
+        self.assertTrue(overlay.restore_panel(impl, state))
+        for name in overlay.CONSTRAINT_NAMES:
+            self.assertTrue(getattr(impl.constraints, name).active)
+        for constraint in state["constraints"].values():
+            self.assertFalse(constraint.active)
+
+    def test_painting_the_background_sets_the_view_and_its_window(self):
+        window = FakeView("UIWindow")
+        view = FakeView("root")
+        view.window = lambda: window
+        made: list = []
+
+        def factory(red, green, blue, alpha):
+            made.append((red, green, blue, alpha))
+            return "colour"
+
+        self.assertTrue(overlay.paint_background(view, "#0b0f14", color_factory=factory))
+        self.assertEqual(view.backgroundColor, "colour")
+        self.assertEqual(window.backgroundColor, "colour")
+        self.assertAlmostEqual(made[0][0], 11 / 255, places=3)
 
 
 if __name__ == "__main__":

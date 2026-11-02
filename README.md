@@ -290,25 +290,37 @@ screen brightness down or let the bot run on the PC instead.
    └────────────────────────────────────────┘
    ```
 
-   **Native overlay is off by default.**  Build `ios-28` pinned the WebView to the
-   window with Auto Layout constraints (`src/checkersbot_ios/overlay.py`) and on a
-   real iPhone it left only the upper part of the game visible with the controls
-   hidden, so the app ships the last known-good layout again:
-   `OVERLAY_ENABLED = False` in `src/checkersbot_ios/app.py`.  The sheet is a
-   layout sibling again, i.e. opening it shrinks the visible game (never reloads
-   or zooms it).  The pin code stays behind that flag for a future attempt, and
-   the app now logs the real UIKit hierarchy so the next change can be based on
-   measurements instead of guesses:
+   **Floating panel (new in `ios-30`).**  The panel is now pinned *natively* to
+   the content view (`overlay.pin_panel`): only the panel's own constraints are
+   swapped, the **WebView keeps its Toga constraints** (the ios-28 mistake of
+   pinning the WebView itself is gone for good - `WEBVIEW_PIN_ENABLED = False`).
+   On every open/close the app sets the panel's height constraint, forces
+   `layoutIfNeeded`, asks Toga to re-lay the panel's children out, and 0.8 s later
+   **verifies** the panel's real height - if it is not what it should be, the pin
+   is rolled back to the plain layout automatically:
+
+   ```
+   overlay: panel floated above the game (height 44 pt)
+   overlay: panel height -> 304 pt
+   overlay: panel verified at 304 pt
+   ```
+
+   The white strip at the top is the window's `systemBackgroundColor` (white in
+   light mode) showing through the status-bar/Dynamic-Island area; the app paints
+   the window and the content view in its own dark colour (`overlay: background
+   painted dark - the safe-area strip is no longer white`), so the game looks
+   full-height without touching the safe areas.
+
+   Diagnostics (fixed in `ios-30` - rubicon-objc exposes `frame`/`bounds` as
+   *properties*, so calling them raised `'NSRect' object is not callable`) are
+   printed at startup, after the page loads and on **every** open/close:
 
    ```
    overlay: diagnostics (page loaded)
    overlay: sheet display=pack body=none log=none
-   overlay: pinned=False
-   UIWindow frame=390x844@0,0 bounds=390x844 clip=False hidden=False alpha=1.00
-     TogaContainerView frame=390x844@0,0 ...
-       UIView frame=390x844@0,0 ... subs=2
-         UIView frame=390x752@0,0 ...        ← stage (WebView inside)
-         UIView frame=390x44@0,752 ...        ← the bar / sheet
+   overlay: panel pinned=True
+   UIWindow frame=390x844@0,0 bounds=390x844 clip=False hidden=False alpha=1.00 subs=1
+     TogaContainerView frame=390x844@0,0 …
    ```
 
    * **⚙** opens the settings sheet (groups: 🎚 ძრავა, 🎮 თამაში, 🧠 ქცევა,
