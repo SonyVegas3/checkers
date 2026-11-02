@@ -37,20 +37,29 @@ def _engine(module: str, seconds: Optional[float], depth: int):
     return importlib.import_module(module).CheckersAI(max_depth=depth, time_limit=seconds)
 
 
-def _opening(board: Board, plies: int, rng: random.Random) -> None:
-    """Play a few random moves so the games do not all repeat themselves."""
+def _opening(board: Board, plies: int, rng: random.Random):
+    """A few random moves, returned so the paired game can replay exactly them.
+
+    Every pair of games (challenger red / challenger black) starts from the *same*
+    opening, otherwise a small match measures opening luck instead of strength.
+    """
+    moves = []
     for _ in range(plies):
-        moves = board.generate_moves()
-        if not moves:
-            return
-        board.make_move(rng.choice(moves))
+        legal = board.generate_moves()
+        if not legal:
+            break
+        move = rng.choice(legal)
+        board.make_move(move)
+        moves.append(move)
+    return moves
 
 
 def _play_one(board: Board, engines: dict, seconds: Optional[float], depth: int,
-              rng: random.Random, opening: int) -> str:
+              opening_moves) -> str:
     """Returns ``"red"``, ``"black"`` or ``"draw"``."""
     work = board.copy()
-    _opening(work, opening, rng)
+    for move in opening_moves:              # the same opening for both colours
+        work.make_move(move)
     quiet = 0
     for _ in range(MAX_PLIES):
         moves = work.generate_moves()
@@ -96,8 +105,13 @@ def main(argv: Sequence[str] = None) -> int:
     rng = random.Random(args.seed)
     wins = losses = draws = 0
     started = time.perf_counter()
+    opening_moves = []
+    opening_label = ""
     for game in range(args.games):
         challenger_red = game % 2 == 0
+        if challenger_red:                  # one opening per pair, replayed twice
+            opening_moves = _opening(Board(), args.opening, rng)
+            opening_label = " ".join(move.notation() for move in opening_moves) or "-"
         red_module, black_module = (
             (args.a, args.b) if challenger_red else (args.b, args.a)
         )
@@ -105,7 +119,8 @@ def main(argv: Sequence[str] = None) -> int:
             RED: _engine(red_module, args.seconds, args.depth),
             -RED: _engine(black_module, args.seconds, args.depth),
         }
-        result = _play_one(Board(), engines, args.seconds, args.depth, rng, args.opening)
+        result = _play_one(Board(), engines, args.seconds, args.depth,
+                           opening_moves)
         challenger_won = (result == "red") == challenger_red and result != "draw"
         if result == "draw":
             draws += 1
@@ -118,6 +133,7 @@ def main(argv: Sequence[str] = None) -> int:
             mark = "B"
         print(
             f"game {game + 1:2d}: {mark}  ({'A' if challenger_red else 'B'} was red)  "
+            f"opening [{opening_label}]  "
             f"score A {wins} - {losses} B, draws {draws}",
             flush=True,
         )

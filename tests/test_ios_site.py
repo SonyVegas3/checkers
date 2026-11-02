@@ -121,11 +121,16 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(self.site.sign_in("user", "secret"))
         self.assertFalse(WebViewSite(lambda script: "false").has_auth_dialog())
 
-    def test_the_rematch_uses_the_site_api(self) -> None:
-        site = WebViewSite(lambda script: '"requested:42"')
-        self.assertEqual(site.request_rematch(), "requested:42")
+    def test_the_rematch_offer_is_read_and_accepted(self) -> None:
+        offer = '{"opponent": "42", "banner": true, "text": "rematch?"}'
+        site = WebViewSite(lambda script: offer)
+        self.assertEqual(site.rematch_offer()["opponent"], "42")
+        site = WebViewSite(lambda script: "{}")          # nobody offered anything
+        self.assertEqual(site.rematch_offer(), {})
+        site = WebViewSite(lambda script: '"accepted:42"')
+        self.assertEqual(site.accept_rematch(), "accepted:42")
         site = WebViewSite(lambda script: '"none"')
-        self.assertEqual(site.request_rematch(), "none")
+        self.assertEqual(site.accept_rematch(), "none")
 
     def test_a_disabled_stake_is_reported(self) -> None:
         site = WebViewSite(lambda script: '"disabled"', log=lambda line: None)

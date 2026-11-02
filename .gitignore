@@ -1,6 +1,7 @@
 # virtual environment
 .venv/
 .venv-ios/
+.venv-bg/
 venv/
 env/
 
@@ -16,6 +17,10 @@ __pycache__/
 .browser-profile/
 .browser-profile-*/
 logs/
+
+# interactive test board (board_lab.py)
+test_board_logs/
+test_positions/
 
 # packaged exe / build leftovers
 dist/
@@ -37,8 +42,13 @@ build.log
 .DS_Store
 Thumbs.db
 
+# other projects kept in the same working copy (not part of this bot)
+backgammon/
+DominoBot/
+
 # local backups / scratch output
 .backup/
+backgammon/risk_acceptance.json
 briefcase-out.txt
 selfplay.txt
 build-exe.txt

@@ -45,44 +45,39 @@ SITE_COLORS = ("white", "black")
 #: the checkers lobby page (a finished table leaves us back here)
 LOBBY_URL = "https://jokergame.cc/checkers"
 
-#: Ask for a rematch / accept the opponent's request, using the site's own API.
-#:
-#: The client's finish dialog is built from ``game_data.finish.rematch`` (the
-#: opponent id) and its "Rematch" button calls exactly this function, so calling
-#: it has the same effect as a click - without depending on the page language.
-REMATCH_JS = r"""
+#: Read whether the **opponent** has offered a rematch.  The bot never asks first:
+#: the site puts the request in ``init_users.rematch_opponent`` and shows its own
+#: banner (``.rm-offer``) - that is what we look for.
+REMATCH_OFFER_JS = r"""
 (function () {
-  var data = (window.init_game && window.init_game.game_data) || null;
-  var finish = (data && data.finish) || null;
-  var opponent = (finish && finish.rematch) ? String(finish.rematch) : '';
-  if (!opponent && typeof init_users === 'object' && init_users && init_users.rematch_opponent) {
-    opponent = String(init_users.rematch_opponent);      // an incoming request
-  }
+  var users = (typeof init_users === 'object') ? init_users : null;
+  var incoming = (users && users.rematch_opponent) ? String(users.rematch_opponent) : '';
+  var banner = document.querySelector('.rm-offer');
+  return JSON.stringify({
+    opponent: incoming,
+    banner: !!banner,
+    text: banner ? ((banner.textContent || '').trim().slice(0, 120)) : ''
+  });
+})()
+"""
+
+#: Accept the opponent's offer - the same client call their banner's button makes.
+ACCEPT_REMATCH_JS = r"""
+(function () {
+  var users = (typeof init_users === 'object') ? init_users : null;
+  var opponent = (users && users.rematch_opponent) ? String(users.rematch_opponent) : '';
   if (opponent && typeof init_play === 'object' && init_play &&
       typeof init_play.rematch === 'function') {
     init_play.rematch({ 'opponent_id': opponent });
-    return 'requested:' + opponent;
-  }
-  // last resort: click the site's own "Rematch" button - the finish dialog's
-  // footer, or the "the opponent wants a rematch" banner it injects next to it
-  var labels = ['Rematch', '\u10e0\u10d4\u10db\u10d0\u10e2\u10e9\u10d8'];
-  if (typeof lang === 'object' && lang && typeof lang.text === 'function') {
-    try {
-      var translated = String(lang.text(124) || '').trim();
-      if (translated) labels.push(translated);
-    } catch (error) { /* ignore */ }
+    return 'accepted:' + opponent;
   }
   var buttons = document.querySelectorAll(
-      '.game-finish-dialog .big-dialog-button, .rm-offer .big-dialog-button,' +
-      ' .rm-offer button, .rm-offer .app-button');
+      '.rm-offer .big-dialog-button, .rm-offer button, .rm-offer .app-button');
   for (var index = 0; index < buttons.length; index += 1) {
     var text = (buttons[index].textContent || '').trim();
-    for (var l = 0; l < labels.length; l += 1) {
-      if (text && labels[l] && text.indexOf(labels[l]) >= 0) {
-        buttons[index].click();
-        return 'clicked';
-      }
-    }
+    if (!text) continue;
+    buttons[index].click();
+    return 'clicked';
   }
   return 'none';
 })()
@@ -387,7 +382,7 @@ def site_legal_moves(board: Board, probe: Dict[int, List[int]]) -> List[Move]:
     ``probe`` is ``{from_square: [first_landing, ...]}`` as returned by
     :meth:`CheckersBot.probe_moves`.  Restricting the engine to this set is what
     keeps the bot from ever clicking a square the server does not offer
-    (forced jumps, maximum-capture rules, colour/orientation mistakes, ...).
+    (forced jumps, a different capture rule, colour/orientation mistakes, ...).
     """
     return [
         move
@@ -499,12 +494,24 @@ READ_STATE_JS = r"""
   }
 
   const finishDialog = !!document.querySelector('.game-finish-dialog');
+  // The client marks the finished dialog gf-won / gf-lost (a saved dump shows
+  // "big-dialog game-finish-dialog gf-std gf-lost"), so the outcome is read and
+  // never guessed from the evaluation.
+  let finishResult = null;
+  const finishEl = document.querySelector('.game-finish-dialog');
+  if (finishEl) {
+    const cls = String(finishEl.className || '');
+    if (/\bgf-won\b/.test(cls)) finishResult = 'win';
+    else if (/\bgf-lost\b/.test(cls)) finishResult = 'loss';
+    else if (/\bgf-draw\b/.test(cls)) finishResult = 'draw';
+  }
 
   return {
     squares: squares,
     stones: stones,
     server: server,
     finish_dialog: finishDialog,
+    finish_result: finishResult,
     dialog: !!document.querySelector('.big-dialog'),
     waiting: !!document.querySelector('.waiting-opponent, .v2-wait-dialog'),
     my_turn: server.playerAction !== null
@@ -575,6 +582,7 @@ class SiteState:
         "squares",
         "stones",
         "finished",
+        "finish_result",
         "waiting",
         "dialog",
         "my_turn",
@@ -626,6 +634,14 @@ class SiteState:
         # the opponent offers a draw: the site's dialog blocks the board and the
         # clock keeps running, so it has to be answered (the bot always agrees)
         self.draw_offer = bool(server.get("opponentDraw"))
+        #: "win"/"loss"/"draw" when the site's finish dialog says so, else None.
+        #: The client marks the dialog with ``gf-won`` / ``gf-lost`` (confirmed in a
+        #: saved page dump: ``big-dialog game-finish-dialog gf-std gf-lost …``), so
+        #: the result is read from the site instead of being guessed from the score.
+        raw_result = str(raw.get("finish_result") or "").strip().lower()
+        self.finish_result: Optional[str] = (
+            raw_result if raw_result in ("win", "loss", "draw") else None
+        )
 
         self.by_absolute: Dict[int, Dict[str, object]] = {}
         self.absolute_by_square: Dict[int, int] = {}
@@ -750,11 +766,18 @@ class Site(Protocol):
     def enter_game(self, coins: int = 0) -> bool:
         """Walk the lobby and open a table with the given stake."""
 
-    def request_rematch(self) -> str:
-        """Ask for a rematch (or accept the opponent's), like the site's button.
+    def rematch_offer(self) -> Dict[str, object]:
+        """Has the **opponent** offered a rematch?
 
-        Returns ``"requested:<id>"`` / ``"clicked"`` when a request went out and
-        ``"none"`` when the site offers no rematch (the opponent already left).
+        Returns ``{"opponent": str, "banner": bool, "text": str}``; everything
+        empty/``False`` means "no offer right now".  The bot never asks first - it
+        only accepts an offer that is already there.
+        """
+
+    def accept_rematch(self) -> str:
+        """Accept the opponent's rematch offer (``"accepted:<id>"``/``"clicked"``).
+
+        ``"none"`` when there is nothing to accept.
         """
 
     def open_lobby(self) -> bool:

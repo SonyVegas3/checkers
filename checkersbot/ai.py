@@ -112,6 +112,77 @@ def _build_piece_square_tables():
 RED_MAN_PST, BLACK_MAN_PST, RED_KING_PST, BLACK_KING_PST = _build_piece_square_tables()
 
 
+def evaluate_components(board: Board) -> Dict[str, int]:
+    """The static evaluation split into the terms it is built from.
+
+    ``sum(components.values()) == evaluate(board)`` by construction, and a test
+    checks that on many positions.  The test board shows these next to the searched
+    score so the two are never confused: a search result is not a static score.
+    """
+    cells = board.cells
+    material = 0
+    tables = 0
+    red_mobility = 0
+    black_mobility = 0
+    red_back = black_back = 0
+    red_men = black_men = 0
+    pieces_total = 0
+    flying = board.flying_kings
+    for square in PLAYABLE_SQUARES:
+        piece = cells[square]
+        if piece == 0:
+            continue
+        pieces_total += 1
+        if piece > 0:
+            if piece == RED_MAN:
+                material += MAN_VALUE
+                tables += RED_MAN_PST[square]
+                red_men += 1
+                if square >= 56:
+                    red_back += 1
+                steps = RED_STEPS[square]
+            else:
+                material += KING_VALUE
+                tables += RED_KING_PST[square]
+                steps = _king_targets(cells, square, flying)
+            for target in steps:
+                if cells[target] == 0:
+                    red_mobility += 1
+        else:
+            if piece == BLACK_MAN:
+                material -= MAN_VALUE
+                tables -= BLACK_MAN_PST[square]
+                black_men += 1
+                if square < 8:
+                    black_back += 1
+                steps = BLACK_STEPS[square]
+            else:
+                material -= KING_VALUE
+                tables -= BLACK_KING_PST[square]
+                steps = _king_targets(cells, square, flying)
+            for target in steps:
+                if cells[target] == 0:
+                    black_mobility += 1
+
+    back_row = (min(red_back, 2) * black_men - min(black_back, 2) * red_men) \
+        * BACK_ROW_WEIGHT // 12
+    trade = 0
+    if TRADE_WEIGHT:
+        empty = len(PLAYABLE_SQUARES) - pieces_total
+        balance = material + tables + (red_mobility - black_mobility) * MOBILITY_WEIGHT
+        if balance > 0:
+            trade += empty * TRADE_WEIGHT // 2
+        elif balance < 0:
+            trade -= empty * TRADE_WEIGHT // 2
+    return {
+        "material": material,
+        "piece_square": tables,
+        "mobility": (red_mobility - black_mobility) * MOBILITY_WEIGHT,
+        "back_row": back_row,
+        "trade": trade,
+    }
+
+
 def evaluate(board: Board) -> int:
     """Static evaluation of ``board`` from RED's point of view (centipawns)."""
     cells = board.cells
@@ -205,7 +276,7 @@ class SearchStats:
         self,
         depth: int = 0,
         nodes: int = 0,
-        score: int = 0,
+        score: Optional[int] = None,
         elapsed: float = 0.0,
         move: Optional[Move] = None,
         note: str = "",
@@ -213,6 +284,7 @@ class SearchStats:
     ) -> None:
         self.depth = depth
         self.nodes = nodes
+        #: ``None`` means "not evaluated" - never a made-up zero
         self.score = score
         self.elapsed = elapsed
         self.move = move
@@ -221,8 +293,9 @@ class SearchStats:
 
     def __str__(self) -> str:
         move = self.move.notation() if self.move is not None else "-"
+        score = "not evaluated" if self.score is None else "%+d" % self.score
         text = (
-            f"move {move} | depth {self.depth} | score {self.score:+d} | "
+            f"move {move} | depth {self.depth} | score {score} | "
             f"nodes {self.nodes} | {self.elapsed * 1000:.0f} ms"
         )
         if self.note:
@@ -241,20 +314,43 @@ class CheckersAI:
         quiescence_depth: int = 12,
         max_extra_depth: int = 6,
         tt_size: int = 400_000,
+        soft_limit: Optional[float] = None,
+        use_killers: bool = False,
+        use_pvs: bool = False,
+        use_aspiration: bool = False,
+        aspiration_window: int = 60,
     ) -> None:
         if color not in (RED, BLACK):
             raise ValueError("color must be RED or BLACK")
         self.color = color            # informational, the board decides who moves
         self.max_depth = max_depth
         self.time_limit = time_limit  # seconds per move, None = no limit
+        #: Stop starting new iterations after this many seconds (the hard limit,
+        #: ``time_limit``, still aborts a running one).  ``None`` = no soft limit.
+        self.soft_limit = soft_limit
         self.quiescence_depth = quiescence_depth
         self.max_extra_depth = max_extra_depth
         self.tt_size = tt_size
+        # -- search refinements (each one measurable on its own) --------------
+        #: killer moves + history heuristic for *quiet* move ordering
+        self.use_killers = use_killers
+        #: principal variation search (null-window probes after the first move)
+        self.use_pvs = use_pvs
+        #: aspiration windows around the previous iteration's score
+        self.use_aspiration = use_aspiration
+        self.aspiration_window = int(aspiration_window)
+        #: Optional ``callable() -> bool``: when it returns True the search stops
+        #: like a clock expiry and returns the last fully completed iteration (the
+        #: test board's "stop" button uses this; the game itself never sets it).
+        self.should_stop: Optional[object] = None
+        self._killers: Dict[int, List[Move]] = {}
+        self._history_scores: Dict[Tuple[int, int, int], int] = {}
         self.stats = SearchStats()
         self._table: Dict[Tuple[Tuple[int, ...], int], Tuple[int, int, int, Optional[Move]]] = {}
         self._history: Optional[set] = None
         self._nodes = 0
         self._deadline = float("inf")
+        self._started = 0.0
 
     # ------------------------------------------------------------------
     # public API
@@ -274,7 +370,8 @@ class CheckersAI:
             extra = 0
         return max(1, self.max_depth + max(0, extra))
 
-    def choose_move(self, board: Board, history=None, allowed=None) -> Optional[Move]:
+    def choose_move(self, board: Board, history=None, allowed=None,
+                    quick_single: bool = True) -> Optional[Move]:
         """Best move for ``board.turn``, or ``None`` if the side has no moves.
 
         The board passed in is never modified (the search works on a copy),
@@ -286,11 +383,19 @@ class CheckersAI:
         won game into a 40-move draw (and a losing one may still repeat to draw).
 
         ``allowed`` optionally restricts the root moves (e.g. when the site the
-        bot is playing on enforces the "maximum capture" rule).
+        bot is playing on offers only some of them).
+
+        With exactly one legal move, ``quick_single`` (the default) skips the
+        search and reports ``score=None`` / ``depth=0`` - "not evaluated", never a
+        made-up zero.  Pass ``quick_single=False`` when a real evaluation of that
+        single move is needed (the test board's comparison mode does).
         """
         start = time.perf_counter()
         self._nodes = 0
+        self._started = start
         self._table.clear()
+        self._killers.clear()
+        self._history_scores.clear()
         self._history = set(history) if history else None
         self._deadline = start + self.time_limit if self.time_limit else float("inf")
 
@@ -301,12 +406,14 @@ class CheckersAI:
             if restricted:
                 moves = restricted
         if not moves:
-            self.stats = SearchStats(0, 0, 0, time.perf_counter() - start, None, "no legal moves")
+            self.stats = SearchStats(0, 0, None, time.perf_counter() - start, None,
+                                     "no legal moves")
             return None
-        if len(moves) == 1:
-            move = moves[0]
-            self.stats = SearchStats(1, 1, 0, time.perf_counter() - start, move, "only move")
-            return move
+        if len(moves) == 1 and quick_single:
+            # nothing to choose - and nothing is claimed about the position
+            self.stats = SearchStats(0, 0, None, time.perf_counter() - start,
+                                     moves[0], "only move (not evaluated)")
+            return moves[0]
 
         target_depth = self.dynamic_depth(work)
         best_move, best_score, reached_depth, note, gap = self._deepen(
@@ -314,11 +421,52 @@ class CheckersAI:
         )
 
         if best_move is None:                      # cannot happen, kept for safety
-            best_move = moves[0]
+            best_move = self._fallback_move(work, moves)
+        else:
+            bigger = self._prefer_bigger_capture(work, moves, best_move, allowed)
+            if bigger is not best_move:
+                note = f"{note} bigger capture".strip()
+                best_move = bigger
         self.stats = SearchStats(
             reached_depth, self._nodes, best_score, time.perf_counter() - start,
             best_move, note, gap,
         )
+        return best_move
+
+    #: Play the move that takes more pieces when its evaluation is within this many
+    #: centipawns of the best one.  JokerGame does **not** force the longest capture
+    #: (any completed chain is legal - see ``checkersbot/rules.py``), but "take as
+    #: much as you can" is what a player expects, so a 3-piece capture is played
+    #: over a 2-piece one unless it is clearly worse.  ``0`` switches the
+    #: preference off.
+    capture_margin = 60
+
+    def _prefer_bigger_capture(self, board: Board, moves, best_move: Move,
+                               allowed=None) -> Move:
+        """The bigger capture, unless a smaller one is clearly better."""
+        if not self.capture_margin or best_move is None or not best_move.captured:
+            return best_move
+        bigger = [move for move in moves
+                  if move.captured_count > best_move.captured_count]
+        if not bigger:
+            return best_move
+        saved_stats, saved_nodes = self.stats, self._nodes
+        try:
+            ranked = {str(move): score
+                      for score, move in self.rank_moves(board, allowed=allowed, depth=4)}
+        except Exception:                          # a search that cannot finish
+            return best_move
+        finally:
+            self.stats, self._nodes = saved_stats, saved_nodes
+        if not ranked:
+            return best_move
+        best_score = ranked.get(str(best_move))
+        if best_score is None:
+            return best_move
+        for move in sorted(bigger, key=lambda item: item.captured_count, reverse=True):
+            score = ranked.get(str(move))
+            if score is not None and score >= best_score - self.capture_margin:
+                return move
         return best_move
 
     # ------------------------------------------------------------------
@@ -360,13 +508,25 @@ class CheckersAI:
         self.stats = SearchStats(
             depth,
             self._nodes,
-            scored[-1][0] if scored else 0,
+            scored[-1][0] if scored else None,
             time.perf_counter() - start,
             scored[-1][1] if scored else None,
             "ranked",
             gap,
         )
         return scored
+
+    def _fallback_move(self, board: Board, moves: List[Move]) -> Move:
+        """A legal move when not even the first iteration finished.
+
+        The clock can fire before depth 1 completes; instead of an arbitrary
+        ``moves[0]`` this returns the move the static evaluation likes best, so a
+        timed-out move is still a sensible one.
+        """
+        cache: Dict[Any, float] = {}
+        return max(
+            moves, key=lambda move: -self._evaluate(board.resulting_board(move), cache)
+        )
 
     def _deepen(self, board: Board, target_depth: int, allowed=None):
         """Iterative deepening up to ``target_depth``; returns the best result so far."""
@@ -379,8 +539,19 @@ class CheckersAI:
         note = ""
         try:
             for depth in range(1, target_depth + 1):
-                move, score, iteration_gap = self._search_root(
-                    board, depth, best_move if reached_depth else None, allowed
+                if (
+                    self.soft_limit is not None
+                    and depth > 1
+                    and (time.perf_counter() - self._started) >= self.soft_limit
+                ):
+                    # no new iteration: the last completed one is the answer
+                    note = note or "soft time limit"
+                    break
+                move, score, iteration_gap = self._search_iteration(
+                    board, depth,
+                    best_move if reached_depth else None,
+                    best_score if reached_depth else None,
+                    allowed,
                 )
                 if move is not None:
                     best_move, best_score, reached_depth = move, score, depth
@@ -389,23 +560,28 @@ class CheckersAI:
                     note = "forced result"
                     break
                 if time.perf_counter() >= self._deadline:
+                    # the clock is spent: the last completed iteration is the answer
+                    note = note or "time limit"
                     break
         except SearchTimeout:
             # The interrupted recursion leaves make/unmake unbalanced: restore.
             note = "time limit"
             board.cells[:] = snapshot
             board.turn = turn
+        if reached_depth <= 0:
+            # the clock stopped the very first iteration: no value exists for this
+            # position, so report "not evaluated" instead of the -INF placeholder
+            return best_move, None, reached_depth, note or "not evaluated", gap
         return best_move, best_score, reached_depth, note, gap
 
     def _search_root(self, board: Board, depth: int, preferred: Optional[Move] = None,
-                     allowed=None):
+                     allowed=None, alpha: int = -INF, beta: int = INF):
         """One full-width iteration of iterative deepening."""
-        ordered = self._order_moves(board, board.generate_moves(), preferred)
+        ordered = self._order_moves(board, board.generate_moves(), preferred, ply=0)
         if allowed is not None:
             restricted = [move for move in ordered if move in allowed]
             if restricted:
                 ordered = restricted
-        alpha, beta = -INF, INF
         best_move = ordered[0]
         best_score = -INF
         second_score = -INF
@@ -425,11 +601,42 @@ class CheckersAI:
         gap = 0 if second_score <= -INF else max(0, best_score - second_score)
         return best_move, best_score, gap
 
+    def _search_iteration(self, board: Board, depth: int,
+                          preferred: Optional[Move], previous: Optional[int],
+                          allowed=None):
+        """One iteration, with an aspiration window when the previous score is known.
+
+        A failed window is widened and the iteration re-searched; the returned bound
+        is then guaranteed to be exact for the widening that succeeded.
+        """
+        if not (self.use_aspiration and previous is not None and depth >= 3):
+            return self._search_root(board, depth, preferred, allowed)
+
+        delta = max(1, self.aspiration_window)
+        low, high = previous - delta, previous + delta
+        for _ in range(6):                      # widening is bounded, then full width
+            move, score, gap = self._search_root(
+                board, depth, preferred, allowed, alpha=low, beta=high
+            )
+            if score <= low:
+                low -= delta
+                delta *= 2
+                continue
+            if score >= high:
+                high += delta
+                delta *= 2
+                continue
+            return move, score, gap
+        return self._search_root(board, depth, preferred, allowed)
+
     def _negamax(self, board: Board, depth: int, alpha: int, beta: int, ply: int) -> int:
         """Alpha-beta negamax with a transposition table and jump quiescence."""
         self._nodes += 1
-        if not self._nodes & 1023 and time.perf_counter() > self._deadline:
-            raise SearchTimeout
+        if not self._nodes & 1023:
+            if time.perf_counter() > self._deadline:
+                raise SearchTimeout
+            if self.should_stop is not None and self.should_stop():
+                raise SearchTimeout
 
         key = (tuple(board.cells), board.turn)
         if self._history is not None and key in self._history:
@@ -472,9 +679,17 @@ class CheckersAI:
 
         best_score = -INF
         best_move: Optional[Move] = None
-        for move in self._order_moves(board, moves, hash_move):
+        first = True
+        for move in self._order_moves(board, moves, hash_move, ply=ply):
             undo = board.make_move(move)
-            score = -self._negamax(board, depth - 1, -beta, -alpha, ply + 1)
+            if self.use_pvs and not first:
+                # null-window probe: only a move that beats alpha needs the full one
+                score = -self._negamax(board, depth - 1, -alpha - 1, -alpha, ply + 1)
+                if alpha < score < beta:
+                    score = -self._negamax(board, depth - 1, -beta, -alpha, ply + 1)
+            else:
+                score = -self._negamax(board, depth - 1, -beta, -alpha, ply + 1)
+            first = False
             board.unmake_move(move, undo)
             if score > best_score:
                 best_score = score
@@ -482,6 +697,17 @@ class CheckersAI:
                 if score > alpha:
                     alpha = score
                 if alpha >= beta:
+                    if not move.captured and self.use_killers:
+                        # a quiet move that caused a cutoff is worth trying early
+                        # in the same place of the next sibling searches
+                        slots = self._killers.setdefault(ply, [])
+                        if move not in slots:
+                            slots.insert(0, move)
+                            del slots[2:]
+                        key = (board.turn, move.from_square, move.to_square)
+                        self._history_scores[key] = (
+                            self._history_scores.get(key, 0) + depth * depth
+                        )
                     break                          # beta cutoff
 
         # Mate scores depend on the ply, keep them out of the table.
@@ -496,12 +722,19 @@ class CheckersAI:
         return best_score
 
     def _order_moves(
-        self, board: Board, moves: List[Move], hash_move: Optional[Move] = None
+        self, board: Board, moves: List[Move], hash_move: Optional[Move] = None,
+        ply: Optional[int] = None,
     ) -> List[Move]:
         """Order moves so that the most promising ones are searched first."""
         if len(moves) <= 1:
             return moves
         cells = board.cells
+        turn = board.turn
+        killers = ()
+        history = {}
+        if self.use_killers:                # the refinements cost a lookup per move
+            killers = self._killers.get(ply, []) if ply is not None else ()
+            history = self._history_scores
 
         def priority(move: Move) -> int:
             if hash_move is not None and move == hash_move:
@@ -509,6 +742,14 @@ class CheckersAI:
             value = 0
             if move.captured:
                 value += 100_000 + 10_000 * len(move.captured)
+            elif self.use_killers:
+                # a quiet killer is searched before ordinary quiet moves, and the
+                # history heuristic orders the rest by how often they cut
+                if move in killers:
+                    value += 90_000
+                else:
+                    value += min(8_000, history.get(
+                        (turn, move.from_square, move.to_square), 0))
             if move.promotes:
                 value += 5_000
             piece = cells[move.from_square]

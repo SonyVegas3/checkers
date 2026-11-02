@@ -19,8 +19,8 @@ import sys
 import time
 from typing import List, Optional, Tuple
 
-from ai import CheckersAI
-from board import BLACK, RED, Board, Move
+from checkersbot.ai import CheckersAI
+from checkersbot.board import BLACK, RED, Board, Move
 
 DRAW_PLIES = 80  # 40 moves per side without a capture or a promotion
 
@@ -75,12 +75,13 @@ def _prompt_move(board: Board, moves: List[Move]) -> Optional[Move]:
 
 
 def play_human_vs_ai(args: argparse.Namespace) -> int:
-    board = Board(rules=args.rules)
+    board = Board()
     ai_side = RED if args.ai_red else BLACK
     human_side = -ai_side
     ai = CheckersAI(color=ai_side, max_depth=args.depth, time_limit=args.time or None)
 
-    print(f"Checkers - 8x8, forced jumps, {args.rules} rules.")
+    print("Checkers - 8x8, JokerGame rules: flying kings, men capture backwards, "
+          "capturing is compulsory, any completed capture path may be played.")
     print(f"You are {_side(human_side)}, the engine is {_side(ai_side)}.")
     print(HELP_TEXT)
 
@@ -116,10 +117,10 @@ def play_human_vs_ai(args: argparse.Namespace) -> int:
 
 
 def _auto_game(
-    depth: int, time_limit: Optional[float], verbose: bool, rules: str = "brazilian"
+    depth: int, time_limit: Optional[float], verbose: bool
 ) -> Tuple[str, int]:
     """Play one engine-vs-engine game, return ``(result, plies)``."""
-    board = Board(rules=rules)
+    board = Board()
     ai = CheckersAI(max_depth=depth, time_limit=time_limit)
     quiet_plies = 0
     plies = 0
@@ -151,7 +152,7 @@ def play_selfplay(args: argparse.Namespace) -> int:
     tally = {"RED": 0, "BLACK": 0, "draw": 0}
     started = time.perf_counter()
     for game_no in range(1, args.selfplay + 1):
-        result, plies = _auto_game(args.depth, args.time or None, args.verbose, args.rules)
+        result, plies = _auto_game(args.depth, args.time or None, args.verbose)
         tally[result] += 1
         print(f"game {game_no}: {result} in {plies} plies")
     elapsed = time.perf_counter() - started
@@ -175,15 +176,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="run GAMES engine-vs-engine games and exit (smoke test)",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="print every self-play move")
-    parser.add_argument(
-        "--rules",
-        default="joker",
-        choices=("joker", "brazilian", "russian", "english"),
-        help="joker = brazilian rules + a man crowned in the middle of a capture "
-             "keeps capturing as a king (jokergame.cc), brazilian = flying kings + "
-             "backwards man captures + longest capture, russian = flying kings, "
-             "english = American checkers (default: joker)",
-    )
     return parser
 
 

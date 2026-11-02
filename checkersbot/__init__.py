@@ -1,9 +1,11 @@
 """The reusable core of the checkers bot.
 
 =====================  =======================================================
+:mod:`checkersbot.rules`  the one rule set (JokerGame) and where it comes from
 :mod:`checkersbot.board`  rules: 8x8 board, move generation, make/unmake
 :mod:`checkersbot.ai`     negamax search, evaluation, dynamic depth
 :mod:`checkersbot.site`   jokergame.cc protocol: selectors, JS, ``SiteState``
+:mod:`checkersbot.lab`    logic behind the interactive test board
 :mod:`checkersbot.bot`    ``CheckersBot`` - the loop that plays a game
 =====================  =======================================================
 

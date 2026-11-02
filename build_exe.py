@@ -55,6 +55,10 @@ def build(onefile: bool = True) -> Path:
         "--hidden-import", "playwright.sync_api",
         "--hidden-import", "tkinter",
         "--hidden-import", "tkinter.ttk",
+        # the panel's "სატესტო დაფა" button restarts the exe with --test-board
+        "--hidden-import", "board_lab",
+        "--hidden-import", "checkersbot.lab",
+        "--hidden-import", "checkersbot.solver",
         "--distpath", str(ROOT / "dist"),
         "--workpath", str(ROOT / "build"),
         "--specpath", str(ROOT / "build"),

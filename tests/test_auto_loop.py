@@ -60,20 +60,24 @@ def _raw(finished: bool, step: int, my_turn: bool = True,
 class FakeSite:
     """Just enough of the Site interface for the game-loop tests."""
 
-    def __init__(self, states, rematch="requested:42", search="none",
+    def __init__(self, states, rematch="", offer_after=0, search="none",
                  ready_after=0) -> None:
         self.states = list(states)
+        #: the opponent's rematch offer: "" = none, otherwise the opponent id
         self.rematch = rematch
+        #: how many ``rematch_offer`` reads pass before the opponent asks
+        self.offer_after = offer_after
         self.search = search
         self.ready_after = ready_after
         self.reads = 0
+        self.offers_read = 0
         self.lobby_opened = False
         self.games_entered = 0
         self.coin_accepts = 0
         self.coin_declines = 0
         self.chat_declines = 0
         self.draw_accepts = 0
-        self.rematch_requests = 0
+        self.rematch_accepts = 0
         self.searches_cancelled = 0
 
     def accept_coin_offer(self) -> str:
@@ -108,9 +112,16 @@ class FakeSite:
         self.search = "none"
         return "clicked"
 
-    def request_rematch(self) -> str:
-        self.rematch_requests += 1
-        return self.rematch
+    def rematch_offer(self):
+        """The opponent's offer (``{}`` while they have not asked yet)."""
+        self.offers_read += 1
+        if not self.rematch or self.offers_read <= self.offer_after:
+            return {}
+        return {"opponent": self.rematch, "banner": True, "text": "rematch?"}
+
+    def accept_rematch(self) -> str:
+        self.rematch_accepts += 1
+        return "accepted:%s" % self.rematch if self.rematch else "none"
 
     def open_lobby(self) -> bool:
         self.lobby_opened = True
@@ -174,40 +185,44 @@ class AutoLoopTests(unittest.TestCase):
         return CheckersBot(site, **options)
 
     def test_an_accepted_rematch_keeps_the_table(self):
+        # the *opponent* offers a rematch after a couple of polls; the bot accepts
         finished = SiteState(_raw(True, 40))
         fresh = SiteState(_raw(False, 2))
-        site = FakeSite([finished, fresh, fresh, fresh])
-        bot = self._bot(site, rematch_wait=2.0)
+        site = FakeSite([finished, finished, finished, fresh, fresh],
+                        rematch="42", offer_after=2)
+        bot = self._bot(site, rematch_wait=5.0)
         bot.calibrated = True
         bot.my_engine_color = RED
 
         self.assertTrue(bot._next_game(finished))
         self.assertEqual(bot.games_played, 1)
+        self.assertGreaterEqual(site.rematch_accepts, 1)   # their offer was taken
         self.assertFalse(site.lobby_opened)
         # a rematch can swap the colours, so the side is calibrated again
         self.assertFalse(bot.calibrated)
         self.assertIsNone(bot.my_engine_color)
 
-    def test_without_a_rematch_a_new_opponent_is_sought(self):
+    def test_without_an_offer_in_time_a_new_opponent_is_sought(self):
         finished = SiteState(_raw(True, 40))
         fresh = SiteState(_raw(False, 1))
-        site = FakeSite([finished, fresh], rematch="none")
-        bot = self._bot(site)
+        site = FakeSite([finished, fresh])                  # nobody offers a rematch
+        bot = self._bot(site, rematch_wait=1.0)
 
         self.assertTrue(bot._next_game(finished))
+        self.assertEqual(site.rematch_accepts, 0)
         self.assertTrue(site.lobby_opened)
 
     def test_no_lobby_walk_stops_after_the_game(self):
         finished = SiteState(_raw(True, 40))
-        site = FakeSite([finished], rematch="none")
-        bot = self._bot(site, lobby_walk=False)
+        site = FakeSite([finished])
+        bot = self._bot(site, lobby_walk=False, rematch_wait=0.5)
 
         self.assertFalse(bot._next_game(finished))
         self.assertFalse(site.lobby_opened)
 
     def test_run_stops_when_max_games_is_reached(self):
         finished = SiteState(_raw(True, 40))
-        site = FakeSite([finished], rematch="none")
+        site = FakeSite([finished])
         bot = self._bot(site, lobby_walk=False)
         bot.games_played = 1
         self.assertEqual(bot.run(max_games=1), 0)
@@ -407,8 +422,7 @@ class AutoLoopTests(unittest.TestCase):
 
     def test_a_simple_position_is_answered_quickly(self):
         # a single legal move: nothing to think about, so the short pause is used
-        one_choice = Board.from_rows(["........"] * 7 + ["r......."], turn=RED,
-                                     rules="joker")
+        one_choice = Board.from_rows(["........"] * 7 + ["r......."], turn=RED)
         legal = one_choice.generate_moves()
         self.assertEqual(len(legal), 1)
 
@@ -442,36 +456,68 @@ class AutoLoopTests(unittest.TestCase):
         bot._think(legal)
         self.assertLess(time.time() - started, 1.6)   # 0.4-1.2 s only
 
-    def test_the_bot_offers_a_rematch_itself(self):
+    def test_the_think_delays_can_be_switched_off_live(self):
+        # the panel's switch is polled before every move: off = no pause at all
+        board = Board.from_rows(["........"] * 7 + ["r......."], turn=RED)
+        legal = board.generate_moves()
+        site = FakeSite([SiteState(_raw(False, 1))])
+        bot = self._bot(site, think_delays=(5.0,), quick_delays=(5.0,),
+                        should_think_delays=lambda: False)
+        bot.moves_in_game = 5                      # past the quick opening move
+        started = time.time()
+        bot._think(legal)
+        self.assertLess(time.time() - started, 0.3)   # nothing was waited
+
+    def test_the_think_delays_come_back_when_the_switch_is_on(self):
+        board = Board.from_rows(["........"] * 7 + ["r......."], turn=RED)
+        legal = board.generate_moves()
+        site = FakeSite([SiteState(_raw(False, 1))])
+        flag = {"on": True}
+        bot = self._bot(site, think_delays=(0.3,), quick_delays=(0.3,),
+                        should_think_delays=lambda: flag["on"])
+        bot.moves_in_game = 5
+        started = time.time()
+        bot._think(legal)
+        self.assertGreaterEqual(time.time() - started, 0.25)
+        flag["on"] = False                          # switched off mid-game
+        started = time.time()
+        bot._think(legal)
+        self.assertLess(time.time() - started, 0.25)
+
+    def test_the_bot_never_offers_a_rematch_itself(self):
+        # it only watches: no offer from the opponent means "find a new table"
         finished = SiteState(_raw(True, 40))
         fresh = SiteState(_raw(False, 2))
-        site = FakeSite([finished, fresh, fresh, fresh])
-        bot = self._bot(site, rematch_wait=2.0)
+        site = FakeSite([finished, fresh])
+        bot = self._bot(site, rematch_wait=1.0)
         lines = []
         bot._log = lines.append
 
         self.assertTrue(bot._next_game(finished))
-        self.assertGreaterEqual(site.rematch_requests, 1)
-        self.assertTrue(any("rematch offered" in line for line in lines), lines)
+        self.assertEqual(site.rematch_accepts, 0)
+        self.assertGreaterEqual(site.offers_read, 1)       # it looked for one
+        self.assertTrue(any("we do not ask" in line for line in lines), lines)
+        self.assertTrue(site.lobby_opened)
 
     def test_auto_rematch_off_goes_straight_to_the_lobby(self):
         finished = SiteState(_raw(True, 40))
         fresh = SiteState(_raw(False, 1))
-        site = FakeSite([finished, fresh])
+        site = FakeSite([finished, fresh], rematch="42")
         bot = self._bot(site, rematch=False)
 
         self.assertTrue(bot._next_game(finished))
-        self.assertEqual(site.rematch_requests, 0)         # no offer was sent
+        self.assertEqual(site.rematch_accepts, 0)          # nothing was accepted
+        self.assertEqual(site.offers_read, 0)              # not even looked at
         self.assertTrue(site.lobby_opened)                 # a new opponent instead
 
     def test_a_live_auto_rematch_switch_is_read_after_every_game(self):
         finished = SiteState(_raw(True, 40))
         fresh = SiteState(_raw(False, 1))
-        site = FakeSite([finished, fresh])
+        site = FakeSite([finished, fresh], rematch="42")
         bot = self._bot(site, rematch_wait=1.0, should_rematch=lambda: False)
 
         self.assertTrue(bot._next_game(finished))
-        self.assertEqual(site.rematch_requests, 0)
+        self.assertEqual(site.rematch_accepts, 0)
         self.assertTrue(site.lobby_opened)
 
 

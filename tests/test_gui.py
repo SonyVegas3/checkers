@@ -31,6 +31,32 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(Settings().depth, 18)
         self.assertEqual(Settings().time, 12.0)
 
+    def test_every_toggle_maps_to_a_real_cli_flag(self):
+        # nothing in the panel may be a dead switch: whatever it turns on has to
+        # exist in web_bot's parser
+        settings = Settings(mode="auth_lobby", email="a@b.c", password="x",
+                            headless=True, close_browser=True, trace_board=True,
+                            dry_run=True, no_probe=True, accept_stake=True,
+                            auto_rematch=False, human_delays=False, no_fit=True,
+                            max_moves=5, max_games=2, channel="chrome",
+                            window_size="1200x800")
+        args = parse_settings_argv(settings)
+        self.assertTrue(args.headless)
+        self.assertTrue(args.close_browser)
+        self.assertTrue(args.trace_board)
+        self.assertTrue(args.dry_run)
+        self.assertFalse(args.use_probe)          # --no-probe
+        self.assertTrue(args.accept_stake)
+        self.assertTrue(args.no_rematch)
+        self.assertTrue(args.no_think_delays)
+        self.assertFalse(args.apply_fit)          # --no-fit
+        self.assertEqual(args.max_moves, 5)
+        self.assertEqual(args.max_games, 2)
+        self.assertEqual(args.channel, "chrome")
+        self.assertEqual(args.window_size, "1200x800")
+        # the live switches the panel reads while the bot plays must exist too
+        self.assertTrue(hasattr(args, "lobby_walk"))
+
     def test_stake_is_forwarded(self):
         for stake in (0, 1, 2, 3, 4, 5):
             args = parse_settings_argv(Settings(stake=stake))
@@ -90,10 +116,21 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(loaded.email, "me@example.com")
         self.assertEqual(loaded.password, "")
 
+    def test_human_delays_switch_reaches_the_cli(self):
+        # on (default): the 2/3/5/7 pauses, off: the bot moves as soon as it can
+        self.assertNotIn("--no-think-delays", Settings().to_argv())
+        argv = Settings(human_delays=False).to_argv()
+        self.assertIn("--no-think-delays", argv)
+        args = parse_settings_argv(Settings(human_delays=False))
+        self.assertTrue(args.no_think_delays)
+        args = parse_settings_argv(Settings(human_delays=True))
+        self.assertFalse(args.no_think_delays)
+
     def test_settings_round_trip(self):
         original = Settings(mode="board", stake=4, depth=11, time=1.5,
                             headless=True, close_browser=True, trace_board=True,
                             dry_run=True, no_probe=True, no_fit=True,
+                            human_delays=False,
                             max_moves=9, channel="msedge")
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "nested" / "settings.json"
@@ -134,6 +171,102 @@ class LabelTests(unittest.TestCase):
         masked = gui.BotWindow._masked_argv(settings)
         self.assertNotIn("topsecret", masked)
         self.assertIn("•••", masked)
+
+
+class WindowLogicTests(unittest.TestCase):
+    """The panel's own decisions that do not need a display."""
+
+    def test_the_panel_reopens_itself_for_the_test_board(self):
+        # inside the exe there is no python to run board_lab.py with, so the panel
+        # restarts the same executable with --test-board
+        command, workdir = gui.test_board_command()
+        if getattr(sys, "frozen", False):
+            self.assertEqual(command, [sys.executable, "--test-board"])
+        else:
+            self.assertEqual(command[0], sys.executable)
+            self.assertEqual(Path(command[1]).name, "board_lab.py")
+            self.assertTrue(Path(command[1]).is_file())
+        self.assertTrue(Path(workdir).is_dir())
+
+    def test_the_frozen_panel_uses_the_flag(self):
+        original = getattr(sys, "frozen", False)
+        sys.frozen = True                      # pretend to be the PyInstaller exe
+        try:
+            command, _workdir = gui.test_board_command()
+        finally:
+            if original:
+                sys.frozen = original
+            else:
+                del sys.frozen
+        self.assertEqual(command, [sys.executable, "--test-board"])
+
+    def test_the_lose_controls_are_one_human_loss(self):
+        # one shared switch, shown in the lobby and on the live page; the old
+        # standalone "მარცხი" button is gone for good
+        source = Path(gui.__file__).read_text(encoding="utf-8")
+        self.assertEqual(source.count("self.lose_var = tk.BooleanVar()"), 1)
+        self.assertIn("😞 მარცხი (ადამიანურად)", source)
+        self.assertNotIn('text="😞 მარცხი"', source)
+        self.assertNotIn("on_lose(", source)      # no separate one-shot button
+
+    def test_the_live_think_switch_is_wired(self):
+        source = Path(gui.__file__).read_text(encoding="utf-8")
+        self.assertIn("human_delays_var", source)
+        self.assertIn("args.should_think_delays = self.human_delays_var.get", source)
+
+
+class WindowSmokeTests(unittest.TestCase):
+    """The window itself: two pages, live switches, restart button.
+
+    A display is needed, so the tests skip themselves on a headless machine.
+    """
+
+    def setUp(self):
+        if gui.tk is None:                       # pragma: no cover - tkinter missing
+            self.skipTest("tkinter is not available")
+        try:
+            self.root = gui.tk.Tk()
+        except Exception:                        # pragma: no cover - no display
+            self.skipTest("no display for tkinter")
+        self.root.withdraw()
+        self.window = gui.BotWindow(self.root, settings=Settings())
+
+    def tearDown(self):
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def test_the_two_pages_can_be_switched(self):
+        self.assertEqual(self.window.page_name, "lobby")     # starts in the lobby
+        self.window._show_page("live")
+        self.assertEqual(self.window.page_name, "live")
+        self.window._show_page("lobby")
+        self.assertEqual(self.window.page_name, "lobby")
+
+    def test_the_live_switches_are_wired(self):
+        for variable in (self.window.lose_var, self.window.accept_stake_var,
+                         self.window.auto_rematch_var, self.window.human_delays_var):
+            variable.set(not variable.get())
+            self.window._live_changed()          # logs, must not raise
+        settings = self.window._collect()        # still a valid Settings
+        self.assertIsInstance(settings, Settings)
+
+    def test_the_restart_button_starts_when_nothing_runs(self):
+        started = []
+        self.window.on_start = lambda: started.append(True)   # do not open a browser
+        self.window.on_restart()
+        self.assertEqual(started, [True])
+
+    def test_the_lobby_holds_every_control(self):
+        # nothing may be missing from the setup page: the switch variables, the
+        # engine fields and the start/diagnose buttons all exist
+        for name in ("lose_var", "accept_stake_var", "auto_rematch_var",
+                     "human_delays_var", "depth_var", "time_var", "think_var",
+                     "stake_var", "profile_var", "channel_var", "logdir_var",
+                     "start_button", "diagnose_button", "stop_button",
+                     "restart_button", "log_text"):
+            self.assertTrue(hasattr(self.window, name), name)
 
 
 if __name__ == "__main__":

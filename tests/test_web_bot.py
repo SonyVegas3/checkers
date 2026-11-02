@@ -14,7 +14,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from board import BLACK, RED, Board, parse_square, square_name  # noqa: E402
+from checkersbot.board import BLACK, RED, Board, parse_square, square_name  # noqa: E402
 from web_bot import (  # noqa: E402
     CheckersBot,
     JokerGameSite,

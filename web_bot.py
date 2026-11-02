@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -85,7 +86,8 @@ from checkersbot.site import (  # noqa: F401 - re-exported for the tests / CLI
     FIT_VIEW_JS,
     LOBBY_URL,
     READ_STATE_JS,
-    REMATCH_JS,
+    ACCEPT_REMATCH_JS,
+    REMATCH_OFFER_JS,
     SEARCH_STATUS_JS,
     SELECTORS,
     SiteState,
@@ -422,12 +424,22 @@ class JokerGameSite:
             self.log(f"! lobby step failed: {error}")
         return False
 
-    def request_rematch(self) -> str:
-        """Ask for a rematch exactly like the site's own finish-dialog button."""
+    def rematch_offer(self) -> Dict[str, object]:
+        """Has the opponent offered a rematch?  (We never ask for one ourselves.)"""
         try:
-            return str(self.page.evaluate(REMATCH_JS) or "none")
+            raw = str(self.page.evaluate(REMATCH_OFFER_JS) or "{}")
+            data = json.loads(raw) if raw.strip().startswith("{") else {}
+        except (PlaywrightError, ValueError) as error:
+            self.log(f"  (rematch offer could not be read: {error})")
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def accept_rematch(self) -> str:
+        """Accept the opponent's rematch offer (the banner's own button)."""
+        try:
+            return str(self.page.evaluate(ACCEPT_REMATCH_JS) or "none")
         except PlaywrightError as error:
-            self.log(f"  (rematch request failed: {error})")
+            self.log(f"  (rematch accept failed: {error})")
             return "none"
 
     def open_lobby(self) -> bool:
@@ -759,7 +771,7 @@ def _diagnose_rules(site: "JokerGameSite", args) -> int:
 
     Prints, for every one of our pieces, the squares the server offers and the
     squares our rules predict.  Any difference means the site plays by different
-    rules (e.g. flying kings) - exactly what this mode is for.
+    rules - exactly what this mode is for.
     """
     bot = CheckersBot(
         site,
@@ -925,9 +937,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="our colour in the engine (auto = read it from the men)")
     parser.add_argument("--depth", type=int, default=18,
                         help="engine base search depth (the clock is what stops it)")
-    parser.add_argument("--time", type=float, default=12.0,
-                        help="engine seconds per move (0 = no limit) - more time is "
-                             "straight strength, the site allows ~30 s per move")
+    parser.add_argument("--time", type=float, default=None,
+                        help="cap on engine seconds per move (default: derive the "
+                             "budget from the site's per-move clock, ~60 s, minus "
+                             "the time probing and clicking need; fallback 12 s "
+                             "when the page reports no clock)")
+    parser.add_argument("--time-overhead", type=float, default=None,
+                        help="seconds of the clock reserved for reading the board, "
+                             "probing and clicking (default: 6)")
     parser.add_argument("--poll", type=float, default=1.0, help="seconds between board polls")
     parser.add_argument("--coins", type=int, default=0, choices=range(0, 6),
                         help="lobby stake: 0 = 50 coins, 1 = 5 000 … 5 = 10 000 000")
@@ -954,6 +971,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quick-delays", default="1,2,3",
                         help="times used instead when the move was obvious (a forced "
                              "capture, one clearly best move) - default: 1,2,3")
+    parser.add_argument("--no-think-delays", action="store_true",
+                        help="no human 'thinking' pause at all: the bot moves as soon "
+                             "as its search is finished (the panel's live switch does "
+                             "the same while it plays)")
     parser.add_argument("--lose", action="store_true",
                         help="lose on purpose, but only with average-player moves: "
                              "nothing is handed over for free")
@@ -1006,7 +1027,10 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
     should_stop = getattr(args, "should_stop", None)
     should_lose = getattr(args, "should_lose", None)
     if should_lose is None and getattr(args, "lose", False):
-        should_lose = lambda: True       # noqa: E731 - a constant "lose" switch
+        should_lose = lambda: True       # noqa: E731 - a constant "human loss" switch
+    should_think_delays = getattr(args, "should_think_delays", None)
+    if should_think_delays is None and getattr(args, "no_think_delays", False):
+        should_think_delays = lambda: False    # noqa: E731 - pauses off from the start
     lobby_walk = getattr(args, "lobby_walk", True)
     channel = getattr(args, "channel", None)
     think_delays = tuple(
@@ -1125,10 +1149,12 @@ def run_bot(args: argparse.Namespace, log=None) -> int:
                 should_rematch=getattr(args, "should_rematch", None),
                 think_delays=think_delays,
                 quick_delays=quick_delays,
+                should_think_delays=should_think_delays,
                 log=log,
                 should_stop=should_stop,
                 should_lose=should_lose,
                 lobby_walk=lobby_walk,
+                time_overhead=args.time_overhead,
             )
             code = bot.run(max_moves=args.max_moves, once=args.once,
                            max_games=args.max_games)

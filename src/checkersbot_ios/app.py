@@ -63,7 +63,8 @@ class CheckersBotApp(toga.App):
         #: off by default: a bigger stake costs coins, so the bot only agrees when
         #: the "💰 ფსონის გაზრდა" switch next to the buttons is on
         self._accept_stake = False
-        #: offer a rematch after every game (the 🔁 switch turns it off)
+        #: wait for the opponent's rematch offer after every game (the 🔁 switch
+        #: turns that waiting off; the bot never offers a rematch itself)
         self._auto_rematch = True
 
     # -- window content -------------------------------------------------
@@ -85,7 +86,7 @@ class CheckersBotApp(toga.App):
         # One switch per row, text inside the switch: three buttons already fill
         # the width of a phone, so anything next to them gets pushed off screen.
         self.lose_switch = toga.Switch(
-            "😞 მარცხი (ადამიანურად)",
+            "😞 ადამიანური მარცხი",
             value=False,
             on_change=self.on_lose_toggle,
             style=Pack(margin=(8, 8, 0, 8)),
@@ -97,7 +98,7 @@ class CheckersBotApp(toga.App):
             style=Pack(margin=(8, 8, 0, 8)),
         )
         self.rematch_switch = toga.Switch(
-            "🔁 ავტო-რემატჩი",
+            "🔁 ოპონენტის რემატჩის ლოდინი",
             value=bool(self._auto_rematch),
             on_change=self.on_rematch_toggle,
             style=Pack(margin=(8, 8, 2, 8)),
@@ -252,7 +253,6 @@ class CheckersBotApp(toga.App):
             lobby_walk=True,
             coins=STAKE,
             use_probe=True,
-            rules="joker",
             accept_stake=self._accept_stake,
             # the switch is read before every offer, so it can be flipped mid-game
             should_accept_stake=lambda: self._accept_stake,
@@ -315,12 +315,12 @@ class CheckersBotApp(toga.App):
             if not (self._bot_thread is not None and self._bot_thread.is_alive()):
                 self.log_line("😞 მარცხი ჩართულია — ბოტის გაშვებისას ითამაშებს სუსტად")
             else:
-                self.log_line("😞 მარცხი ჩართულია - ბოტი საშუალო დონეზე ითამაშებს")
+                self.log_line("😞 ადამიანური მარცხი ჩართულია - ბოტი საშუალო დონეზე ითამაშებს")
         else:
-            self.log_line("😞 მარცხი გამორთულია - ჩვეულებრივ ძალაზე თამაშობს")
+            self.log_line("😞 ადამიანური მარცხი გამორთულია - ჩვეულებრივ ძალაზე თამაშობს")
 
     def on_rematch_toggle(self, widget, **kwargs) -> None:
-        """Offer a rematch after every game only while this switch is on."""
+        """Wait for the opponent's rematch offer only while this switch is on."""
         value = getattr(widget, "value", None)
         if value is None:
             value = kwargs.get("value")
@@ -331,9 +331,9 @@ class CheckersBotApp(toga.App):
         if bot is not None:
             bot.rematch = self._auto_rematch
         if self._auto_rematch:
-            self.log_line("🔁 ავტო-რემატჩი: ჩართულია (თამაშის შემდეგ სთავაზობს)")
+            self.log_line("🔁 რემატჩის ლოდინი: ჩართულია (ოპონენტის შეთავაზებას ველოდები)")
         else:
-            self.log_line("🔁 ავტო-რემატჩი: გამორთულია (ახალ ოპონენტს ეძებს)")
+            self.log_line("🔁 რემატჩის ლოდინი: გამორთულია (ახალ ოპონენტს ეძებს)")
 
     def on_stake_toggle(self, widget, **kwargs) -> None:
         """Agree to a bigger stake only while this switch is on."""

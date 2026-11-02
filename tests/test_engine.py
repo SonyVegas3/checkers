@@ -14,8 +14,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ai import MATE_THRESHOLD, CheckersAI, evaluate
-from board import (
+from checkersbot.ai import MATE_THRESHOLD, CheckersAI, evaluate
+from checkersbot.board import (
     BLACK,
     BLACK_MAN,
     RED,
@@ -51,9 +51,14 @@ class BoardRulesTests(unittest.TestCase):
     def test_perft_matches_known_english_draughts_values(self):
         board = Board()
         snapshot = board.copy()
-        for depth, nodes in ((1, 7), (2, 49), (3, 302), (4, 1469), (5, 7361)):
+        # the opening has no kings and the first four plies contain no capture, so
+        # these are the published English-draughts numbers
+        for depth, nodes in ((1, 7), (2, 49), (3, 302), (4, 1469)):
             with self.subTest(depth=depth):
                 self.assertEqual(board.perft(depth), nodes)
+        # at ply 5 a capture appears for the first time, and JokerGame lets a man
+        # take backwards too, so the tree is larger than the English 7361
+        self.assertEqual(board.perft(5), 7482)
         self.assertEqual(board, snapshot)  # perft must leave the board untouched
 
     def test_capturing_is_mandatory(self):
@@ -94,11 +99,11 @@ class BoardRulesTests(unittest.TestCase):
         self.assertEqual(board.piece_count(BLACK), 0)
         self.assertEqual(board.piece_at(parse_square("f6")), RED_MAN)
 
-    def test_promotion_ends_the_jump(self):
+    def test_a_promotion_jump_continues_as_a_king(self):
         board = Board.from_rows([
             "........",
-            "..b.b...",
-            ".r......",
+            "..b.b...",      # c7 and e7
+            ".r......",      # b6 jumps c7, is crowned on d8, keeps taking e7
             "........",
             "........",
             "........",
@@ -106,13 +111,15 @@ class BoardRulesTests(unittest.TestCase):
             "........",
         ])
         moves = board.generate_moves()
-        self.assertEqual(len(moves), 1)
-        move = moves[0]
-        self.assertTrue(move.promotes)
-        self.assertEqual(len(move.captured), 1)
-        self.assertEqual(square_name(move.to_square), "d8")
-        board.apply_move(move)
-        self.assertEqual(board.piece_at(parse_square("d8")), RED_KING)
+        self.assertEqual(sorted(m.notation() for m in moves),
+                         ["b6xf6", "b6xg5", "b6xh4"])
+        for move in moves:
+            self.assertTrue(move.promotes)
+            self.assertEqual(move.captured_count, 2)
+            self.assertEqual(square_name(move.landing_path[0]), "d8")
+        board.apply_move(next(m for m in moves if m.notation() == "b6xf6"))
+        self.assertEqual(board.piece_at(parse_square("f6")), RED_KING)
+        self.assertEqual(board.piece_count(BLACK), 0)
         self.assertEqual(board.turn, BLACK)
 
     def test_quiet_step_promotes(self):
@@ -170,7 +177,8 @@ class BoardRulesTests(unittest.TestCase):
         self.assertTrue(board.is_terminal())
         self.assertEqual(board.winner(), RED)
 
-    def test_men_cannot_jump_backwards(self):
+    def test_men_may_jump_backwards(self):
+        # a black man on d4 jumps the red man on e5 - "up" is backwards for black
         board = Board.from_rows([
             "........",
             "........",
@@ -182,8 +190,8 @@ class BoardRulesTests(unittest.TestCase):
             "........",
         ], turn=BLACK)
         moves = board.generate_moves()
-        self.assertTrue(moves)
-        self.assertTrue(all(not move.captured for move in moves))
+        self.assertEqual([move.notation() for move in moves], ["d4xf6"])
+        self.assertEqual([square_name(s) for s in moves[0].captured], ["e5"])
 
     def test_kings_jump_in_every_direction(self):
         board = Board.from_rows([
@@ -197,7 +205,15 @@ class BoardRulesTests(unittest.TestCase):
             "........",
         ])
         moves = board.generate_moves()
-        self.assertEqual(sorted(m.notation() for m in moves), ["d4xb2", "d4xf6"])
+        # a taken piece leaves at once, so the king may land on any free square
+        # behind it - here that gives every route through both men
+        self.assertEqual(len(moves), 12)
+        for move in moves:
+            self.assertEqual({square_name(s) for s in move.captured}, {"e5", "c3"})
+            self.assertEqual(len(move.landing_path), 2)
+            self.assertEqual(move.to_square, move.landing_path[-1])
+        self.assertEqual({square_name(move.to_square) for move in moves},
+                         {"a1", "b2", "f6", "g7", "h8"})
 
     def test_king_multi_jump(self):
         board = Board.from_rows([
@@ -226,8 +242,26 @@ class BoardRulesTests(unittest.TestCase):
             board.parse_move("hello")
 
 
-class RussianRulesTests(unittest.TestCase):
-    """Russian draughts (``damka``): what jokergame.cc actually plays."""
+class JokerGameRuleTests(unittest.TestCase):
+    """The one rule set of the project: :data:`checkersbot.rules.JOKERGAME`."""
+
+    def test_there_is_exactly_one_rule_set(self):
+        self.assertEqual(RULES, ("joker",))
+        board = Board()
+        self.assertEqual(board.rules, "joker")
+        self.assertEqual(board.removal, "immediate")
+        self.assertTrue(board.flying_kings)
+        self.assertTrue(board.men_capture_backwards)
+        self.assertTrue(board.promotion_continues)
+        self.assertFalse(board.longest_capture_required)
+        self.assertFalse(hasattr(board, "maximum_capture"))
+
+    def test_other_rule_sets_are_refused(self):
+        for name in ("english", "russian", "brazilian", "nope"):
+            with self.assertRaises(ValueError, msg=name):
+                Board(rules=name)
+            with self.assertRaises(ValueError, msg=name):
+                Board.from_rows(["........"] * 8, rules=name)
 
     def test_kings_fly_along_the_whole_diagonal(self):
         board = Board.from_rows([
@@ -239,26 +273,26 @@ class RussianRulesTests(unittest.TestCase):
             "........",
             "........",
             "........",
-        ], turn=BLACK, rules="russian")
-        # the site forces captures, so ask for the quiet moves explicitly
+        ])
         targets = sorted(square_name(m.to_square) for m in board.quiet_moves(RED))
         self.assertEqual(targets, [
-            "a1", "a7", "b2", "b6", "c3", "c5", "e3", "e5", "f2", "f6", "g1", "g7", "h8",
+            "a1", "a7", "b2", "b6", "c3", "c5", "e3", "e5", "f2", "f6", "g1",
+            "g7", "h8",
         ])
 
-    def test_english_kings_still_step_one_square(self):
+    def test_men_move_forwards_only(self):
         board = Board.from_rows([
-            ".b......",
             "........",
             "........",
             "........",
-            "...R....",
+            "........",
+            "...r....",
             "........",
             "........",
             "........",
-        ], turn=BLACK, rules="english")
+        ])
         targets = sorted(square_name(m.to_square) for m in board.quiet_moves(RED))
-        self.assertEqual(targets, ["c3", "c5", "e3", "e5"])
+        self.assertEqual(targets, ["c5", "e5"])
 
     def test_flying_king_captures_from_a_distance(self):
         # the exact position of the live game where the site's king swept two men
@@ -272,33 +306,35 @@ class RussianRulesTests(unittest.TestCase):
             "........",
             "r.B.....",
         ]
-        board = Board.from_rows(rows, turn=BLACK, rules="russian")
-        moves = {(m.notation(), tuple(square_name(s) for s in m.captured),
-                  tuple(square_name(s) for s in m.landing_path))
-                 for m in board.generate_moves()}
-        self.assertEqual(moves, {
+        board = Board.from_rows(rows, turn=BLACK)
+        routes = {(m.notation(), tuple(square_name(s) for s in m.captured),
+                   tuple(square_name(s) for s in m.landing_path))
+                  for m in board.generate_moves()}
+        self.assertEqual(routes, {
             ("c1xd6", ("e3", "e5"), ("f4", "d6")),
             ("c1xe7", ("e3", "f6"), ("g5", "e7")),
         })
 
-    def test_english_rules_cannot_reach_that_capture(self):
+    def test_men_capture_backwards_like_the_site_did(self):
         rows = [
-            "...b...b",
-            "b.b.....",
-            ".....r.b",
-            "....r...",
+            ".b.b.b.b",
+            "b...b.b.",
+            ".....b.b",
+            "b.r.r...",
             ".......r",
             "....r...",
-            "........",
-            "r.B.....",
+            "...r.r.r",
+            "r.r.r.r.",
         ]
-        board = Board.from_rows(rows, turn=BLACK, rules="english")
-        notations = {m.notation() for m in board.generate_moves()}
-        self.assertNotIn("c1xe7", notations)
-        self.assertNotIn("c1xd6", notations)
+        board = Board.from_rows(rows, turn=BLACK)
+        moves = {m.notation(): m for m in board.generate_moves()}
+        self.assertEqual(sorted(moves), ["f6xb6"])
+        move = moves["f6xb6"]
+        self.assertEqual([square_name(s) for s in move.captured], ["e5", "c5"])
+        self.assertEqual([square_name(s) for s in move.landing_path], ["d4", "b6"])
 
-    def test_flying_king_may_land_on_any_square_behind(self):
-        board = Board.from_rows([
+    def test_a_piece_is_never_taken_twice(self):
+        rows = [
             "........",
             "........",
             ".....b..",
@@ -307,92 +343,52 @@ class RussianRulesTests(unittest.TestCase):
             "........",
             "........",
             "........",
-        ], rules="russian")
-        moves = board.generate_moves()
-        landings = sorted(square_name(m.to_square) for m in moves)
-        # behind f6 the diagonal continues to g7 and h8
-        self.assertEqual(landings, ["g7", "h8"])
-        self.assertEqual({len(m.captured) for m in moves}, {1})
-
-    def test_king_cannot_pass_over_a_piece_it_already_took(self):
-        board = Board.from_rows([
-            "........",
-            "........",
-            ".....b..",
-            "........",
-            "...R....",
-            "........",
-            "........",
-            "........",
-        ], rules="russian")
+        ]
+        board = Board.from_rows(rows, turn=RED)
         for move in board.generate_moves():
             self.assertEqual(len(set(move.captured)), len(move.captured),
-                             f"{move.notation()} takes a piece twice")
-
-    def test_men_still_capture_forwards_only(self):
-        board = Board.from_rows([
-            "........",
-            "........",
-            "........",
-            "........",
-            "...r....",
-            "..b.....",
-            "........",
-            "........",
-        ], turn=RED, rules="russian")
-        # the black man on c3 sits behind the red man on d4: no backward capture
-        self.assertEqual(sorted(m.notation() for m in board.generate_moves()),
-                         ["d4-c5", "d4-e5"])
-
-    def test_promotion_ends_the_move_under_russian_rules(self):
-        board = Board.from_rows([
-            "........",
-            "..b.....",
-            ".r......",
-            "........",
-            "........",
-            "........",
-            "........",
-            "........",
-        ], turn=RED, rules="russian")
-        moves = board.generate_moves()
-        self.assertEqual([m.notation() for m in moves], ["b6xd8"])
-        self.assertTrue(moves[0].promotes)
-        self.assertEqual([square_name(s) for s in moves[0].captured], ["c7"])
-        self.assertEqual([square_name(s) for s in moves[0].landing_path], ["d8"])
+                             "%s takes a piece twice" % move.notation())
 
 
-class BrazilianRulesTests(unittest.TestCase):
-    """Brazilian draughts: flying kings + men capture backwards + longest capture.
+class CaptureLawTests(unittest.TestCase):
+    """Capturing is compulsory, a chain is finished, but nothing is "the longest"."""
 
-    This is the rule set jokergame.cc actually plays - the position below is the
-    exact board of a live game in which the site answered a double capture
-    ``f6xe5xc5`` that English and Russian rules cannot produce.
-    """
-
-    ROWS = [
-        ".b.b.b.b",
-        "b...b.b.",
+    #: the position of the report: 2 pieces or 3 pieces, both legal
+    TWO_PATHS = [
+        ".....b..",
+        "......b.",
         ".....b.b",
-        "b.r.r...",
-        ".......r",
-        "....r...",
-        "...r.r.r",
-        "r.r.r.r.",
+        "..b...b.",
+        "........",
+        "..b.b.b.",
+        ".r......",
+        "........",
     ]
 
-    def test_men_capture_backwards_like_the_site_did(self):
-        board = Board.from_rows(self.ROWS, turn=BLACK, rules="brazilian")
-        moves = board.generate_moves()
-        self.assertEqual([m.notation() for m in moves], ["f6xb6"])
-        self.assertEqual([square_name(s) for s in moves[0].captured], ["e5", "c5"])
-        self.assertEqual([square_name(s) for s in moves[0].landing_path], ["d4", "b6"])
+    def test_the_reported_position_has_exactly_two_paths(self):
+        board = Board.from_rows(self.TWO_PATHS, turn=RED)
+        moves = {m.notation(): m for m in board.generate_moves()}
+        self.assertEqual(sorted(moves), ["b2xb6", "b2xh4"])
+        self.assertEqual(moves["b2xb6"].captured_count, 2)
+        self.assertEqual([square_name(s) for s in moves["b2xb6"].captured],
+                         ["c3", "c5"])
+        self.assertEqual([square_name(s) for s in moves["b2xb6"].landing_path],
+                         ["d4", "b6"])
+        self.assertEqual(moves["b2xh4"].captured_count, 3)
+        self.assertEqual([square_name(s) for s in moves["b2xh4"].captured],
+                         ["c3", "e3", "g3"])
+        self.assertEqual([square_name(s) for s in moves["b2xh4"].landing_path],
+                         ["d4", "f2", "h4"])
 
-    def test_russian_rules_only_allow_the_forward_jump(self):
-        board = Board.from_rows(self.ROWS, turn=BLACK, rules="russian")
-        self.assertEqual([m.notation() for m in board.generate_moves()], ["f6xd4"])
+    def test_the_chain_may_not_stop_where_it_can_continue(self):
+        board = Board.from_rows(self.TWO_PATHS, turn=RED)
+        self.assertNotIn("b2xd4", [m.notation() for m in board.generate_moves()])
+        # the generator really is the only source: no move is a single hop here
+        for move in board.generate_moves():
+            self.assertGreaterEqual(len(move.landing_path), 2, move.notation())
 
-    def test_the_longest_capture_is_compulsory(self):
+    def test_a_shorter_capture_is_legal_next_to_a_longer_one(self):
+        # h6 takes three men, b2 takes two - both are offered by the engine
         rows = [
             "........",
             "........",
@@ -403,40 +399,44 @@ class BrazilianRulesTests(unittest.TestCase):
             ".b......",
             "........",
         ]
-        brazilian = Board.from_rows(rows, turn=BLACK, rules="brazilian")
-        # h6 x g5 -> f4 x e3 -> d2 x c3 -> b4: three men, and only three counts
-        moves = brazilian.generate_moves()
-        self.assertEqual([m.notation() for m in moves], ["h6xb4"])
-        self.assertEqual(len(moves[0].captured), 3)
-        russian = Board.from_rows(rows, turn=BLACK, rules="russian")
-        # without backwards captures the man on b2 cannot take c3 at all, and the
-        # chain stops after one jump, so the short capture is the only option
-        self.assertEqual(sorted(m.notation() for m in russian.generate_moves()),
-                         ["h6xd2"])
+        board = Board.from_rows(rows, turn=BLACK)
+        moves = {m.notation(): m for m in board.generate_moves()}
+        self.assertEqual(sorted(moves), ["b2xf2", "h6xb4"])
+        self.assertEqual(moves["h6xb4"].captured_count, 3)
+        self.assertEqual(moves["b2xf2"].captured_count, 2)
 
-    def test_kings_fly_under_brazilian_rules_too(self):
-        board = Board.from_rows([
-            ".b......",
-            "........",
-            "........",
-            "........",
-            "...R....",
-            "........",
-            "........",
-            "........",
-        ], turn=BLACK, rules="brazilian")
-        targets = sorted(square_name(m.to_square) for m in board.quiet_moves(RED))
-        self.assertEqual(len(targets), 13)
-        self.assertIn("h8", targets)
+    def test_nothing_is_filtered_after_generation(self):
+        for turn in (RED, BLACK):
+            board = Board.from_rows(list(self.TWO_PATHS), turn=turn)
+            self.assertEqual(board.capture_moves(), board.raw_capture_moves())
+
+    def test_both_paths_can_be_applied_and_undone(self):
+        board = Board.from_rows(self.TWO_PATHS, turn=RED)
+        snapshot = board.copy()
+        for move in list(board.generate_moves()):
+            after = board.resulting_board(move)
+            self.assertEqual(after.piece_count(BLACK), 9 - move.captured_count)
+            self.assertEqual(after.turn, BLACK)
+            self.assertFalse(after.piece_at(move.from_square))
+            self.assertEqual(after.piece_at(move.to_square), RED_MAN)
+            undo = board.make_move(move)
+            board.unmake_move(move, undo)
+            self.assertEqual(board, snapshot)
+
+    def test_the_engine_may_pick_either_path(self):
+        board = Board.from_rows(self.TWO_PATHS, turn=RED)
+        legal = board.generate_moves()
+        self.assertEqual(len(legal), 2)
+        for allowed in ([legal[0]], [legal[1]]):
+            ai = CheckersAI(max_depth=4, time_limit=0.5)
+            move = ai.choose_move(board, allowed=allowed)
+            self.assertEqual(move, allowed[0])
 
 
-class JokerRulesTests(unittest.TestCase):
-    """jokergame.cc: Brazilian rules, plus Russian promotion inside a capture.
 
-    The site crowns a man on the promotion row *during* the jump sequence and
-    lets it carry on as a (flying) king, so one move can be "jump, crown, jump
-    again".  These positions are the smallest ones that show the difference.
-    """
+
+class PromotionInsideCaptureTests(unittest.TestCase):
+    """A man crowned *during* a capture keeps capturing as a (flying) king."""
 
     ROWS = [
         "........",
@@ -450,26 +450,19 @@ class JokerRulesTests(unittest.TestCase):
     ]
 
     def test_the_crowned_man_keeps_capturing(self):
-        board = Board.from_rows(self.ROWS, turn=RED, rules="joker")
+        board = Board.from_rows(self.ROWS, turn=RED)
         moves = board.generate_moves()
         self.assertTrue(moves)
-        self.assertEqual(sorted(m.notation() for m in moves), ["f6xa5", "f6xb6"])
+        self.assertEqual(sorted(m.notation() for m in moves),
+                         ["f6xa5", "f6xb6"])
         for move in moves:
             self.assertEqual(move.captured_count, 2)
             self.assertTrue(move.promotes)
-            self.assertEqual([square_name(s) for s in move.landing_path][0], "d8")
+            self.assertEqual(square_name(move.landing_path[0]), "d8")
         self.assertEqual([square_name(s) for s in moves[0].captured], ["e7", "c7"])
 
-    def test_brazilian_rules_stop_at_the_crown_row(self):
-        # the same board under the plain Brazilian rules: the move ends on d8
-        board = Board.from_rows(self.ROWS, turn=RED, rules="brazilian")
-        moves = board.generate_moves()
-        self.assertEqual([m.notation() for m in moves], ["f6xd8"])
-        self.assertEqual(moves[0].captured_count, 1)
-        self.assertTrue(moves[0].promotes)
-
     def test_the_move_ends_as_a_king(self):
-        board = Board.from_rows(self.ROWS, turn=RED, rules="joker")
+        board = Board.from_rows(self.ROWS, turn=RED)
         move = next(m for m in board.generate_moves()
                     if square_name(m.to_square) == "b6")
         board.apply_move(move)
@@ -487,7 +480,7 @@ class JokerRulesTests(unittest.TestCase):
             "........",
             "........",
             "........",
-        ], turn=RED, rules="joker")
+        ], turn=RED)
         moves = board.generate_moves()
         self.assertEqual([m.notation() for m in moves], ["f6xd8"])
         self.assertTrue(moves[0].promotes)
@@ -495,7 +488,7 @@ class JokerRulesTests(unittest.TestCase):
         self.assertEqual(board.piece_at(parse_square("d8")), RED_KING)
 
     def test_make_unmake_roundtrip_with_a_promotion_chain(self):
-        board = Board.from_rows(self.ROWS, turn=RED, rules="joker")
+        board = Board.from_rows(self.ROWS, turn=RED)
         snapshot = board.copy()
         move = next(m for m in board.generate_moves()
                     if square_name(m.to_square) == "b6")
@@ -504,30 +497,16 @@ class JokerRulesTests(unittest.TestCase):
         self.assertEqual(board, snapshot)
 
     def test_the_engine_plays_a_promotion_chain(self):
-        board = Board.from_rows(self.ROWS, turn=RED, rules="joker")
+        board = Board.from_rows(self.ROWS, turn=RED)
         ai = CheckersAI(color=RED, max_depth=4, time_limit=0.5)
         move = ai.choose_move(board)
         self.assertIsNotNone(move)
         self.assertIn(move, board.generate_moves())
         self.assertTrue(move.promotes)
 
-    def test_the_site_ruleset_is_the_default(self):
-        # the bot, the GUI, the CLI and the iOS app all play "joker"
-        self.assertIn("joker", RULES)
-        self.assertTrue(Board(rules="joker").promotion_continues)
-        self.assertTrue(Board(rules="joker").flying_kings)
-        self.assertTrue(Board(rules="joker").men_capture_backwards)
-        self.assertTrue(Board(rules="joker").maximum_capture)
-        self.assertFalse(Board(rules="brazilian").promotion_continues)
-
 
 class FlyingKingCaptureTests(unittest.TestCase):
-    """A king ("damka") captures over any distance and keeps going.
-
-    This is what jokergame.cc plays: the king picks a piece from afar, lands
-    anywhere behind it and, if another piece is reachable from there, takes that
-    one too - the opponent can use it, so the engine has to see it.
-    """
+    """A king ("damka") captures over any distance and keeps going."""
 
     def test_a_king_takes_two_men_in_one_move(self):
         board = Board.from_rows([
@@ -539,7 +518,7 @@ class FlyingKingCaptureTests(unittest.TestCase):
             "..R.....",      # c3: over e5 to f6, then over g7 to h8
             "........",
             "........",
-        ], turn=RED, rules="joker")
+        ], turn=RED)
         moves = board.generate_moves()
         self.assertEqual([m.notation() for m in moves], ["c3xh8"])
         move = moves[0]
@@ -560,11 +539,10 @@ class FlyingKingCaptureTests(unittest.TestCase):
             "..R.....",      # c3
             "........",
             "........",
-        ], turn=RED, rules="joker")
+        ], turn=RED)
         landings = sorted(square_name(m.to_square) for m in board.generate_moves())
         self.assertEqual(landings, ["f6", "g7", "h8"])   # not just the next square
-        # ...but never on the piece it took or behind a blocker
-        self.assertNotIn("e5", landings)
+        self.assertNotIn("e5", landings)                 # never on the piece it took
 
     def test_the_engine_plays_the_double_king_capture(self):
         board = Board.from_rows([
@@ -576,12 +554,107 @@ class FlyingKingCaptureTests(unittest.TestCase):
             "..R.....",
             "........",
             "........",
-        ], turn=RED, rules="joker")
+        ], turn=RED)
         ai = CheckersAI(color=RED, max_depth=4, time_limit=0.5)
         move = ai.choose_move(board)
         self.assertIsNotNone(move)
         self.assertEqual(move.captured_count, 2)
 
+
+class BotCaptureChoiceTests(unittest.TestCase):
+    """The real bot's plumbing must not lose either path of the report position."""
+
+    ROWS = CaptureLawTests.TWO_PATHS
+
+    def _bot(self):
+        from checkersbot.bot import CheckersBot
+
+        return CheckersBot(site=object(), depth=4, time_limit=0.4,
+                           log=lambda message: None)
+
+    def test_the_bot_plays_one_of_the_two_paths(self):
+        bot = self._bot()
+        board = Board.from_rows(self.ROWS, turn=RED)
+        move = bot._search_move(board)
+        self.assertIn(move.notation(), ["b2xb6", "b2xh4"])
+
+    def test_the_bot_can_be_told_to_play_each_path(self):
+        bot = self._bot()
+        board = Board.from_rows(self.ROWS, turn=RED)
+        legal = {move.notation(): move for move in board.generate_moves()}
+        for notation in ("b2xb6", "b2xh4"):
+            move = bot._search_move(board, allowed=[legal[notation]])
+            self.assertEqual(move.notation(), notation)
+
+    def test_the_site_filter_keeps_both_paths(self):
+        from checkersbot.site import first_landing, site_legal_moves
+
+        board = Board.from_rows(self.ROWS, turn=RED)
+        origin = parse_square("b2")
+        probe = {origin: [parse_square("d4")]}       # the site offers d4 only
+        kept = site_legal_moves(board, probe)
+        self.assertEqual(sorted(move.notation() for move in kept),
+                         ["b2xb6", "b2xh4"])
+        # both paths share the first landing, so a site offer of d4 keeps both
+        self.assertEqual({first_landing(move) for move in kept},
+                         {parse_square("d4")})
+
+    def test_the_bot_has_no_rule_option(self):
+        from checkersbot.bot import CheckersBot
+
+        with self.assertRaises(TypeError):
+            CheckersBot(site=object(), rules="english")
+        bot = self._bot()
+        self.assertEqual(bot.rules, "joker")
+
+
+
+class CapturePreferenceTests(unittest.TestCase):
+    """JokerGame allows any completed capture, but the bot takes as much as it can.
+
+    The site does not force the longest chain (``rules.JOKERGAME``), so a 2-piece
+    capture may be played while a 3-piece one exists - a player expectation is the
+    other way round, which is what ``CheckersAI.capture_margin`` implements.
+    """
+
+    ROWS = [
+        ".R......",      # b8: red king
+        "..b.....",      # c7
+        "........",
+        "........",
+        "........",
+        "..b.....",      # c3
+        "........",
+        "..b.....",      # c1
+    ]
+
+    def _moves(self):
+        board = Board.from_rows(self.ROWS, turn=RED, rules="joker")
+        moves = board.generate_moves()
+        small = next(move for move in moves if move.captured_count == 1)
+        big = next(move for move in moves if move.captured_count == 2)
+        return board, moves, small, big
+
+    def test_the_bigger_capture_wins_unless_it_is_clearly_worse(self):
+        board, moves, small, big = self._moves()
+        ai = CheckersAI(max_depth=4, time_limit=None)
+        ai.rank_moves = lambda *a, **k: [(0, small), (-40, big)]     # worst first
+        self.assertIs(ai._prefer_bigger_capture(board, moves, small), big)
+        ai.rank_moves = lambda *a, **k: [(0, small), (-200, big)]
+        self.assertIs(ai._prefer_bigger_capture(board, moves, small), small)
+
+    def test_a_quiet_move_is_never_swapped_for_a_capture(self):
+        board, moves, small, _ = self._moves()
+        quiet = Board().generate_moves()[0]
+        ai = CheckersAI(max_depth=4, time_limit=None)
+        ai.rank_moves = lambda *a, **k: [(0, quiet), (-1, small)]
+        self.assertIs(ai._prefer_bigger_capture(board, moves, quiet), quiet)
+
+    def test_the_preference_can_be_switched_off(self):
+        board, moves, small, big = self._moves()
+        ai = CheckersAI(max_depth=4, time_limit=None)
+        ai.capture_margin = 0
+        self.assertIs(ai._prefer_bigger_capture(board, moves, small), small)
 
 
 class EvaluationTests(unittest.TestCase):
@@ -626,6 +699,28 @@ class EvaluationTests(unittest.TestCase):
 
 
 class SearchTests(unittest.TestCase):
+    def test_a_forced_move_is_reported_as_not_evaluated(self):
+        # one legal move: the bot does not waste a search, but it must not invent a
+        # score for it either - `None` means "not evaluated", never 0
+        board = Board.from_rows(["........"] * 7 + ["r......."], turn=RED)
+        self.assertEqual(len(board.generate_moves()), 1)
+        ai = CheckersAI(max_depth=6, time_limit=1.0)
+        move = ai.choose_move(board)
+        self.assertEqual(move, board.generate_moves()[0])
+        self.assertIsNone(ai.stats.score)
+        self.assertEqual(ai.stats.depth, 0)
+        self.assertIn("not evaluated", ai.stats.note)
+        self.assertIn("not evaluated", str(ai.stats))
+
+    def test_the_same_move_is_really_searched_when_asked(self):
+        board = Board.from_rows(["........"] * 7 + ["r......."], turn=RED)
+        ai = CheckersAI(max_depth=6, time_limit=1.0)
+        move = ai.choose_move(board, quick_single=False)
+        self.assertEqual(move, board.generate_moves()[0])
+        self.assertIsNotNone(ai.stats.score)
+        self.assertGreater(ai.stats.nodes, 0)
+        self.assertGreaterEqual(ai.stats.depth, 1)
+
     def test_engine_returns_a_legal_move(self):
         board = Board()
         snapshot = board.copy()
@@ -702,16 +797,19 @@ class SearchTests(unittest.TestCase):
             history.append(board.position_key())
 
     def test_repetition_is_avoided_when_ahead(self):
+        # three kings against a single man: the engine is winning and must not walk
+        # into the position it has just reached
         board = Board.from_rows([
-            "........",
+            ".b......",
             "........",
             "..R...R.",
             "........",
             "...R....",
             "........",
-            ".b......",
             "........",
-        ])
+            "........",
+        ], turn=RED)
+        self.assertGreaterEqual(len(board.generate_moves()), 2)
         ai = CheckersAI(max_depth=4, time_limit=1.0, max_extra_depth=0)
         first = ai.choose_move(board)
         self.assertIsNotNone(first)

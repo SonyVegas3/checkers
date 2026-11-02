@@ -29,6 +29,8 @@ from .board import (
     Move,
     square_name,
 )
+from .record import GameRecord, move_record, rows_of
+from .rules import JOKERGAME
 from .site import (
     SITE_COLORS,
     Site,
@@ -38,6 +40,12 @@ from .site import (
     move_landing_path,
     site_legal_moves,
     xy_from_square,
+)
+from .time_manager import (
+    DEFAULT_BUDGET_S,
+    DEFAULT_OVERHEAD_S,
+    TimeBudget,
+    plan_budget,
 )
 
 
@@ -51,7 +59,7 @@ class CheckersBot:
         site_color: str = "auto",
         side: str = "auto",
         depth: int = 7,
-        time_limit: Optional[float] = 3.0,
+        time_limit: Optional[float] = None,
         poll: float = 1.0,
         dry_run: bool = False,
         max_errors: int = 5,
@@ -64,7 +72,6 @@ class CheckersBot:
         email: Optional[str] = None,
         password: Optional[str] = None,
         trace_board: bool = False,
-        rules: str = "joker",
         rematch_wait: float = 30.0,
         chat_wait: float = 5.0,
         accept_stake: bool = False,
@@ -73,19 +80,19 @@ class CheckersBot:
         should_rematch=None,
         think_delays: Sequence[float] = (2.0, 3.0, 5.0, 7.0),
         quick_delays: Sequence[float] = (1.0, 2.0, 3.0),
+        should_think_delays=None,
         obvious_gap: int = 150,
         long_search: float = 6.0,
         log=None,
         should_stop=None,
         should_lose=None,
         lobby_walk: bool = True,
+        time_overhead: Optional[float] = None,
     ) -> None:
         if site_color not in ("auto",) + SITE_COLORS:
             raise ValueError("site_color must be auto, white or black")
         if side not in ("auto", "red", "black"):
             raise ValueError("side must be auto, red or black")
-        if rules not in ("english", "russian", "brazilian", "joker"):
-            raise ValueError("rules must be english, russian, brazilian or joker")
 
         self.site = site
         self.requested_site_color = site_color
@@ -97,7 +104,19 @@ class CheckersBot:
         elif side == "black":
             self.my_engine_color = BLACK
 
-        self.ai = CheckersAI(color=BLACK, max_depth=depth, time_limit=time_limit or None)
+        self.ai = CheckersAI(
+            color=BLACK,
+            max_depth=depth,
+            time_limit=time_limit if time_limit is not None else DEFAULT_BUDGET_S,
+        )
+        #: ``None`` = ask the site clock for the budget (see ``_budget_for``); a
+        #: number = the user's own cap in seconds (``--time`` / panel field).
+        self.time_limit = time_limit
+        self._budget: Optional[TimeBudget] = None
+        #: Part of the site's clock reserved for reading/probing/clicking.
+        self.time_overhead = (
+            DEFAULT_OVERHEAD_S if time_overhead is None else max(0.0, float(time_overhead))
+        )
         self.poll = max(0.1, poll)
         self.dry_run = dry_run
         self.max_errors = max(1, max_errors)
@@ -112,7 +131,8 @@ class CheckersBot:
         self.password = password or None
         self._signed_in = False
         self.trace_board = trace_board
-        self.rules = rules
+        #: the one rule set of the project (see :mod:`checkersbot.rules`)
+        self.rules = JOKERGAME.name
         # how long the opponent gets to accept a rematch before the bot leaves the
         # table and looks for somebody new (the site itself waits 30 s)
         self.rematch_wait = max(1.0, float(rematch_wait))
@@ -134,6 +154,9 @@ class CheckersBot:
         # one clearly best move) - nobody stares at a simple move for seven seconds
         self.think_delays = tuple(float(delay) for delay in (think_delays or ()))
         self.quick_delays = tuple(float(delay) for delay in (quick_delays or ()))
+        #: polled *while* the bot plays: ``False`` = no human pause at all, the bot
+        #: moves as soon as its search is done (the panel's live switch)
+        self.should_think_delays = should_think_delays
         #: a move this much better than the runner-up (1.5 men) counts as obvious
         self.obvious_gap = max(0, int(obvious_gap))
         #: when the engine itself searched this long, the extra "thinking" pause is
@@ -165,6 +188,9 @@ class CheckersBot:
         self.probe_map: Dict[int, List[int]] = {}
 
         self.history: List[object] = []
+        #: JSON record of the current game (``checkersbot.record``), written when
+        #: the game ends; ``None`` between games.
+        self.record: Optional[GameRecord] = None
         self.moves_played = 0
         self.games_played = 0
         self.failures = 0
@@ -196,7 +222,10 @@ class CheckersBot:
         return self.accept_stake
 
     def _rematch_wanted(self) -> bool:
-        """Should a rematch be offered after the game (live from the checkbox)?"""
+        """Should the bot wait for a rematch after the game (live from the switch)?
+
+        It never *offers* one - it only accepts the opponent's offer while it waits.
+        """
         if self.should_rematch is not None:
             try:
                 return bool(self.should_rematch())
@@ -252,13 +281,13 @@ class CheckersBot:
     def _plausible_offers(self, origin: int, offers: Sequence[int]) -> bool:
         """Could these squares really be destinations of a stone on ``origin``?
 
-        Checkers moves are diagonal: one or two squares for men (and for kings
-        under the English rules), any distance for the flying kings of Russian
-        draughts.  Anything else is a leftover from a previous selection (the site
-        repaints its ``.active`` squares only when the server answers).
+        Checkers moves are always diagonal: one or two squares for men, any
+        distance for the flying kings of JokerGame.  Anything else is a leftover
+        from a previous selection (the site repaints its ``.active`` squares only
+        when the server answers).
         """
         origin_x, origin_y = xy_from_square(origin)
-        longest = 7 if self.rules in ("russian", "brazilian", "joker") else 2
+        longest = 7                               # flying kings: the whole diagonal
         for square in offers:
             x, y = xy_from_square(square)
             delta_x, delta_y = abs(x - origin_x), abs(y - origin_y)
@@ -447,7 +476,7 @@ class CheckersBot:
             else:
                 cells[index] = BLACK_KING if king else BLACK_MAN
         turn = color if state.my_turn else -color
-        return Board(cells, turn, self.rules)
+        return Board(cells, turn)
 
     # ------------------------------------------------------------------
     # one move
@@ -499,6 +528,16 @@ class CheckersBot:
             return None
 
         self.history.append(board.position_key())
+        if self.record is None or not self.record.initial_rows:
+            self._start_record(board)
+        self._budget = self._budget_for(state)
+        if self.verbose:
+            budget = self._budget
+            if budget.clock_s:
+                self.log("(site clock %.0fs -> search %.1fs soft / %.1fs hard)"
+                         % (budget.clock_s, budget.soft_s, budget.hard_s))
+            else:
+                self.log("(no site clock -> search %.1fs)" % budget.hard_s)
         if self.trace_board:
             self.log(f"board (our stones are "
                      f"{'r/R' if self.my_engine_color == RED else 'b/B'}):")
@@ -545,12 +584,13 @@ class CheckersBot:
                          f"{square_name(move.from_square)} (it offers: {self._names(offers)})")
                 return self._recover_with_site_moves(state)
 
-        longest = max((candidate.captured_count for candidate in legal), default=0)
         if move.captured:
-            # the site forces the longest capture, so a shorter one is not even
-            # legal - logging both numbers makes that visible in the log
+            # any completed capture path is legal (JokerGame does not force the
+            # longest one), so the log shows the chosen route and what it took
             self.log(f"our move: {move.notation()}   [{self.ai.stats}]"
-                     f"  capture {move.captured_count} of {longest}")
+                     f"  takes {move.captured_count}: "
+                     f"{self._names(move.captured)}"
+                     f"  route {' -> '.join(square_name(s) for s in move.landing_path)}")
         else:
             self.log(f"our move: {move.notation()}   [{self.ai.stats}]")
         if self.dry_run:
@@ -566,7 +606,40 @@ class CheckersBot:
         self.failures = 0
         self.moves_played += 1
         self.moves_in_game += 1
+        if self.record is not None:
+            self.record.add_move(
+                move_record(
+                    self.moves_played, board, move,
+                    stats=self.ai.stats, budget=self._budget, confirmed=True,
+                )
+            )
         return move
+
+    def _start_record(self, board: Optional[Board] = None) -> None:
+        """Begin the JSON record of this game (position, side, moves, result)."""
+        self.record = GameRecord(
+            rules=self.rules,
+            our_site_color=self.my_site_color,
+            our_engine_color=(
+                "red" if self.my_engine_color == RED
+                else "black" if self.my_engine_color == BLACK else None
+            ),
+            depth_cap=getattr(self.ai, "max_depth", None),
+            initial_rows=rows_of(board) if board is not None else [],
+        )
+
+    def _finish_record(self, state: Optional[SiteState]) -> None:
+        """Close and save the record; the result comes from the site or stays unknown."""
+        if self.record is None:
+            return
+        result = getattr(state, "finish_result", None) if state is not None else None
+        self.record.finish(result, source="site finish dialog" if result else "unknown")
+        try:
+            path = self.record.save(self.log_dir)
+            self.log(f"game record written to {path} (result: {self.record.result})")
+        except OSError as error:                    # a record must never stop the bot
+            self.log(f"! could not write the game record: {error}")
+        self.record = None
 
     def _check_site_result(self, before: SiteState, move: Move) -> None:
         """Did the site remove the pieces our move expected?
@@ -587,9 +660,16 @@ class CheckersBot:
             self.log(f"! the site holds {actual} stones after {move.notation()}, "
                      f"{expected} were expected - saving the page")
             self._save_debug("post-move-mismatch")
+            if self.record is not None:
+                self.record.mismatch(
+                    "the site held %d stones after %s (expected %d)"
+                    % (actual, move.notation(), expected)
+                )
 
     def _recover_with_site_moves(self, state: SiteState) -> Optional[Move]:
         """Our move was not offered: re-probe everything and play a site-legal move."""
+        if self.record is not None:
+            self.record.mismatch("the site did not offer our move - played a site-legal one")
         state = self.site.read_state() or state      # always work from a fresh snapshot
         probe = self.probe_moves(state)
         self.probe_map = probe
@@ -1008,6 +1088,23 @@ class CheckersBot:
         if state is not None:
             self._answer_offers(state)
 
+    def _budget_for(self, state: Optional[SiteState]) -> TimeBudget:
+        """Search budget for this move, taken from the clock the site shows.
+
+        ``info.step_timeout`` is a per-move clock of about 60 s (confirmed from the
+        logged games: 57-60 s at every step).  Reading the board, probing and
+        clicking happen inside it, so their cost is removed first and a safety
+        margin stays free (see :mod:`checkersbot.time_manager`).
+        """
+        clock = getattr(state, "step_timeout", None) if state is not None else None
+        try:
+            clock_s = None if clock is None else float(clock)
+        except (TypeError, ValueError):
+            clock_s = None
+        return plan_budget(
+            clock_s, overhead_s=self.time_overhead, ceiling_s=self.time_limit
+        )
+
     def _search_move(self, board: Board, allowed=None) -> Optional[Move]:
         """Run the engine while still answering mid-game dialogs.
 
@@ -1016,8 +1113,11 @@ class CheckersBot:
         answered) while the search runs.  The search works on its own board copy
         and never touches the page, so a worker thread is safe.
         """
+        budget = self._budget
+        if budget is not None:
+            self.ai.time_limit = budget.hard_s
+            self.ai.soft_limit = budget.soft_s
         outcome: Dict[str, object] = {}
-
         def work() -> None:
             try:
                 outcome["move"] = self.ai.choose_move(
@@ -1056,14 +1156,21 @@ class CheckersBot:
         return int(getattr(stats, "gap", 0) or 0) >= self.obvious_gap
 
     def _think(self, legal: Optional[Sequence[Move]] = None) -> None:
-        """Wait like a human before playing.
+        """Wait like a human before playing - unless the live switch is off.
 
         The first move of a game is played almost at once (a human already knows
         the opening).  Later moves wait one of ``think_delays`` seconds at random,
         but a simple position - one or two choices, or one obviously best move -
         only waits one of the shorter ``quick_delays``: seven seconds are for the
         moves that really need thinking.
+
+        ``should_think_delays`` is polled on every move, so the panel's switch can
+        turn the pauses off (or on) **while the bot plays**: with it off the bot
+        moves as soon as its search is finished and only the search itself decides
+        how long it takes.
         """
+        if self.should_think_delays is not None and not self.should_think_delays():
+            return
         if not self.think_delays and not self.quick_delays:
             return
         searched = float(getattr(getattr(self.ai, "stats", None), "elapsed", 0.0) or 0.0)
@@ -1079,6 +1186,14 @@ class CheckersBot:
         else:
             delay = random.choice(self.think_delays or self.quick_delays)
             reason = "thinking"
+        if self._budget is not None:
+            # the pause is part of the same clock as the search
+            remaining = self._budget.hard_s - searched
+            if remaining <= 0:
+                return
+            if delay > remaining:
+                delay = remaining
+                reason += ", trimmed to the clock"
         if delay <= 0:
             return
         self.log(f"thinking {delay:.1f}s ... ({reason})")
@@ -1142,6 +1257,7 @@ class CheckersBot:
     def _reset_for_new_game(self) -> None:
         """Forget the previous table - a rematch can swap the colours."""
         self.history.clear()
+        self.record = None
         self.probe_map = {}
         self.failures = 0
         self.moves_in_game = 0
@@ -1166,19 +1282,17 @@ class CheckersBot:
         self.calibrated = self.my_engine_color is not None
 
     def _next_game(self, state: SiteState) -> bool:
-        """Offer a rematch; if nobody wants one, leave and find a new opponent.
+        """Wait for the **opponent's** rematch offer; otherwise find a new table.
 
-        The site's own finish dialog offers "Rematch" for 30 s (it POSTs
-        ``act=rematch_request`` and then waits); on acceptance it reloads the page
-        with a new ``game_id``, and on refusal it drops back to the lobby.  The
-        bot does the same thing — and it is the one who *asks*: the request goes
-        out at once, and it is repeated whenever the site is not showing its
-        "waiting for the opponent" dialog any more (a request sent while the page
-        was still loading can be lost, and the site's own offer expires).
+        The bot does not ask for a rematch.  After the game it keeps the finished
+        table open for ``rematch_wait`` seconds (30 by default) and watches the
+        page: as soon as the opponent offers a rematch it accepts it (the site then
+        reloads with a new ``game_id``), and when nothing arrives in time - or a
+        rematch is not wanted at all - it leaves and looks for a new opponent.
         """
         self.games_played += 1
         if not self._rematch_wanted():
-            self.log(f"game {self.games_played} is over - auto-rematch is off, "
+            self.log(f"game {self.games_played} is over - rematch is off, "
                      "looking for a new opponent")
             self._reset_for_new_game()
             if not self.lobby_walk:
@@ -1186,48 +1300,46 @@ class CheckersBot:
                 return False
             return self._find_new_table()
         self.log(
-            f"game {self.games_played} is over - offering a rematch "
-            f"({int(self.rematch_wait)}s for the answer)"
+            f"game {self.games_played} is over - waiting {int(self.rematch_wait)}s "
+            "for the opponent to offer a rematch (we do not ask)"
         )
-        request_sent = False
-        none_answers = 0
         fresh_reads = 0
-        last_offer = 0.0
+        accepted = False
+        told_about_wait = False
         deadline = time.time() + self.rematch_wait
         while time.time() < deadline:
             if self._stop_requested():
                 return False
             current = self.site.read_state()
             # ``status`` stays "finish" while the site shows its dialogs, so the
-            # board only looks unfinished once the server really started a new
-            # game - requiring two reads keeps a flicker from counting
+            # board only looks unfinished once the server really started a game -
+            # requiring two reads keeps a flicker from counting
             if current is not None and not current.finished:
                 fresh_reads += 1
                 if fresh_reads >= 2:
                     self._reset_for_new_game()
-                    self.log("a new game started - playing on")
+                    self.log("the opponent accepted - a new game started, playing on")
                     return True
             else:
                 fresh_reads = 0
-            # nobody is waiting on the site any more: the offer expired (or never
-            # arrived), so ask again instead of quietly walking away
-            expired = current is None or not current.waiting
-            if not request_sent or (expired and time.time() - last_offer >= 5.0):
-                answer = str(self.site.request_rematch())
-                if answer not in ("", "none", "None"):
-                    request_sent = True
-                    last_offer = time.time()
-                    self.log(f"rematch offered to the opponent ({answer}) - "
-                             "waiting for them to accept")
-                else:
-                    none_answers += 1
-                    if none_answers >= 3:
-                        self.log("the site offers no rematch - the opponent left")
-                        break
-                    time.sleep(2.0)
-                    continue
+            if not accepted:
+                offer = self.site.rematch_offer() or {}
+                if offer.get("opponent") or offer.get("banner"):
+                    answer = str(self.site.accept_rematch())
+                    if answer not in ("", "none", "None"):
+                        accepted = True
+                        self.log(f"the opponent offered a rematch - accepted "
+                                 f"({answer}); waiting for the new game")
+                    elif not told_about_wait:
+                        told_about_wait = True
+                        self.log("the opponent offers a rematch, but the site did "
+                                 "not accept the click - still waiting")
             time.sleep(0.5)
 
+        if accepted:
+            self.log("! the new game never appeared - leaving the table")
+        else:
+            self.log(f"no rematch offer from the opponent in {int(self.rematch_wait)}s")
         self._reset_for_new_game()
         if not self.lobby_walk:
             self.log("lobby walking is off - stopping after this game")
@@ -1273,6 +1385,7 @@ class CheckersBot:
                     time.sleep(0.5)
                     continue
                 if state.finished:
+                    self._finish_record(state)
                     if (
                         once
                         or (max_moves and self.moves_played >= max_moves)

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -98,6 +99,7 @@ class Settings:
     max_games: int = 0
     rematch_wait: float = 30.0
     think_delays: str = "2,3,5,7"
+    human_delays: bool = True       # the 2/3/5/7 pauses (live switch in the panel)
     channel: str = ""
     window_size: str = ""
     headless: bool = False
@@ -180,6 +182,8 @@ class Settings:
             argv += ["--max-games", str(int(self.max_games))]
         argv += ["--rematch-wait", str(float(self.rematch_wait))]
         argv += ["--think-delays", self.think_delays]
+        if not self.human_delays:
+            argv.append("--no-think-delays")
         for flag, enabled in (
             ("--headless", self.headless),
             ("--close-browser", self.close_browser),
@@ -246,6 +250,7 @@ class BotWindow:
         self.stop_event = threading.Event()
         self.worker: Optional[threading.Thread] = None
         self.moves_seen = 0
+        self.page_name = "lobby"
 
         root.title("Checkers Bot — jokergame.cc")
         root.geometry("980x760")
@@ -258,12 +263,39 @@ class BotWindow:
 
     # -- widgets -------------------------------------------------------
     def _build(self) -> None:
+        """Two pages, like the iOS app: everything is chosen in the **lobby**, and
+        the **live** page holds only what is needed while the bot plays."""
         pad = {"padx": 8, "pady": 4}
         outer = ttk.Frame(self.root, padding=10)
         outer.pack(fill="both", expand=True)
 
+        # -- page switcher ----------------------------------------------
+        switcher = ttk.Frame(outer)
+        switcher.pack(fill="x")
+        self.lobby_tab = ttk.Button(switcher, text="🏠 ლობი — პარამეტრები",
+                                    command=lambda: self._show_page("lobby"))
+        self.lobby_tab.pack(side="left")
+        self.live_tab = ttk.Button(switcher, text="🎮 თამაში — live",
+                                   command=lambda: self._show_page("live"))
+        self.live_tab.pack(side="left", padx=(6, 0))
+        self.status_var = tk.StringVar(value="მზადაა")
+        ttk.Label(switcher, textvariable=self.status_var,
+                  foreground="#0a5").pack(side="right")
+
+        pages = ttk.Frame(outer)
+        pages.pack(fill="both", expand=True, pady=(6, 0))
+        pages.rowconfigure(0, weight=1)
+        pages.columnconfigure(0, weight=1)
+        self.page_lobby = ttk.Frame(pages)
+        self.page_live = ttk.Frame(pages)
+        for page in (self.page_lobby, self.page_live):
+            page.grid(row=0, column=0, sticky="nsew")     # stacked, tkraise() picks
+        lobby = self.page_lobby
+        live = self.page_live
+
+        # ======================= LOBBY PAGE ============================
         # 1) where to start -------------------------------------------------
-        start = ttk.LabelFrame(outer, text="1. საიდან დაიწყოს თამაში", padding=8)
+        start = ttk.LabelFrame(lobby, text="1. საიდან დაიწყოს თამაში", padding=8)
         start.pack(fill="x", **pad)
         self.mode_var = tk.StringVar(value="lobby")
         for index, (key, label) in enumerate(MODES.items()):
@@ -275,7 +307,7 @@ class BotWindow:
                                           pady=(4, 0))
 
         # 2) sign in --------------------------------------------------------
-        auth = ttk.LabelFrame(outer, text="2. ავტორიზაცია (მხოლოდ „ავტორიზაცია → ლობი“)",
+        auth = ttk.LabelFrame(lobby, text="2. ავტორიზაცია (მხოლოდ „ავტორიზაცია → ლობი“)",
                               padding=8)
         auth.pack(fill="x", **pad)
         ttk.Label(auth, text="ელ. ფოსტა / ტელეფონი:").grid(row=0, column=0, sticky="w")
@@ -294,7 +326,7 @@ class BotWindow:
                                           pady=(4, 0))
 
         # 3) table / stake --------------------------------------------------
-        table = ttk.LabelFrame(outer, text="3. მაგიდა და თანხა", padding=8)
+        table = ttk.LabelFrame(lobby, text="3. მაგიდა და თანხა", padding=8)
         table.pack(fill="x", **pad)
         ttk.Label(table, text="თანხა (ლობის არჩევანი):").grid(row=0, column=0, sticky="w")
         self.stake_var = tk.StringVar()
@@ -327,7 +359,7 @@ class BotWindow:
 
 
         # 4) engine ---------------------------------------------------------
-        engine = ttk.LabelFrame(outer, text="4. ძრავა", padding=8)
+        engine = ttk.LabelFrame(lobby, text="4. ძრავა და ქცევა", padding=8)
         engine.pack(fill="x", **pad)
         ttk.Label(engine, text="სიღრმე:").grid(row=0, column=0, sticky="w")
         self.depth_var = tk.StringVar()
@@ -366,8 +398,10 @@ class BotWindow:
         ttk.Entry(engine, textvariable=self.think_var, width=12).grid(
             row=1, column=9, columnspan=3, sticky="w", padx=(6, 0), pady=(8, 0))
 
-        # The board rules are fixed: the bot always plays the jokergame.cc rule
-        # set (Brazilian rules + a man crowned mid-capture keeps capturing), so
+        # The board rules are fixed: the bot always plays the one JokerGame rule set
+        # (checkersbot/rules.py: flying kings, backwards man captures, compulsory
+        # capture, any completed capture path - the longest is not required, a taken
+        # piece removed at once, a man crowned mid-capture keeps capturing), so
         # there is nothing to choose here.
         checks = ttk.Frame(engine)
         checks.grid(row=1, column=0, columnspan=8, sticky="w", pady=(8, 0))
@@ -379,44 +413,83 @@ class BotWindow:
         self.lose_var = tk.BooleanVar()
         self.accept_stake_var = tk.BooleanVar()
         self.auto_rematch_var = tk.BooleanVar(value=True)
+        self.human_delays_var = tk.BooleanVar(value=True)
         for index, (text, variable) in enumerate((
             ("უხილავი (headless)", self.headless_var),
             ("ბრაუზერის დახურვა დასრულების შემდეგ", self.closebrowser_var),
             ("დაფის ტრეისი ლოგში", self.trace_var),
             ("მხოლოდ ჩვენება (dry-run)", self.dryrun_var),
             ("probe-ის გამორთვა", self.noprobe_var),
-            ("😞 მარცხი (ადამიანურად)", self.lose_var),
+            ("😞 ადამიანური მარცხი", self.lose_var),
             ("💰 ფსონის გაზრდაზე დათანხმება", self.accept_stake_var),
-            ("🔁 ავტო-რემატჩი", self.auto_rematch_var),
+            ("🔁 ოპონენტის რემატჩის ლოდინი", self.auto_rematch_var),
+            ("⏱ ფიქრი 2/3/5/7 (ცოცხლად)", self.human_delays_var),
         )):
             # a grid, not a single row: six checkboxes do not fit the window
             ttk.Checkbutton(checks, text=text, variable=variable).grid(
                 row=index // 3, column=index % 3, sticky="w", padx=(0, 18), pady=2)
 
-        # 5) buttons --------------------------------------------------------
-        buttons = ttk.Frame(outer)
+        # 5) lobby actions ---------------------------------------------------
+        buttons = ttk.Frame(lobby)
         buttons.pack(fill="x", **pad)
         self.start_button = ttk.Button(buttons, text="▶ დაწყება", command=self.on_start)
         self.start_button.pack(side="left")
-        self.stop_button = ttk.Button(buttons, text="■ შეჩერება", command=self.on_stop,
-                                      state="disabled")
-        self.stop_button.pack(side="left", padx=(8, 0))
         self.diagnose_button = ttk.Button(buttons, text="✔ წესების შემოწმება",
                                           command=self.on_diagnose)
         self.diagnose_button.pack(side="left", padx=(8, 0))
-        self.lose_button = ttk.Button(buttons, text="😞 მარცხი", command=self.on_lose)
-        self.lose_button.pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="🧪 სატესტო დაფა",
+                   command=self.on_test_board).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="💾 შენახვა",
+                   command=self.save_settings).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="📂 ლოგები",
                    command=lambda: self._open_path(self.logdir_var.get())).pack(
             side="left", padx=(8, 0))
         ttk.Button(buttons, text="📂 პროფილი",
                    command=lambda: self._open_path(self.profile_var.get())).pack(
             side="left", padx=(8, 0))
-        ttk.Button(buttons, text="პარამეტრების შენახვა",
-                   command=self.save_settings).pack(side="right")
+        ttk.Label(lobby, text="ყველაფერი აქ ირჩევა — „დაწყების“ შემდეგ პანელი გადადის "
+                             "„თამაში“ გვერდზე, სადაც მხოლოდ ცოცხალი ღილაკებია.",
+                  foreground="#555").pack(fill="x", padx=10, pady=(0, 6))
+
+        # ======================= LIVE PAGE =============================
+        head = ttk.LabelFrame(live, text="🎮 ცოცხალი მართვა — მოქმედებს თამაშის დროს",
+                              padding=8)
+        head.pack(fill="x", **pad)
+        live_checks = ttk.Frame(head)
+        live_checks.pack(fill="x")
+        for index, (text, variable) in enumerate((
+            ("😞 მარცხი (ადამიანურად)", self.lose_var),
+            ("💰 ფსონის გაზრდაზე დათანხმება", self.accept_stake_var),
+            ("🔁 ავტო-რემატჩი", self.auto_rematch_var),
+            ("⏱ ადამიანური ფიქრი 2/3/5/7", self.human_delays_var),
+        )):
+            ttk.Checkbutton(live_checks, text=text, variable=variable,
+                            command=self._live_changed).grid(
+                row=index // 2, column=index % 2, sticky="w", padx=(0, 18), pady=2)
+        ttk.Label(head,
+                  text="ეს გადამრთველები მაშინვე მოქმედებს — თამაშის გაშვება თავიდან "
+                       "არ სჭირდება.",
+                  foreground="#555").pack(anchor="w", pady=(4, 0))
+
+        live_buttons = ttk.Frame(live)
+        live_buttons.pack(fill="x", **pad)
+        self.stop_button = ttk.Button(live_buttons, text="■ შეჩერება",
+                                      command=self.on_stop, state="disabled")
+        self.stop_button.pack(side="left")
+        self.restart_button = ttk.Button(live_buttons, text="↻ თავიდან გაშვება",
+                                         command=self.on_restart)
+        self.restart_button.pack(side="left", padx=(8, 0))
+        ttk.Button(live_buttons, text="📂 ლოგები",
+                   command=lambda: self._open_path(self.logdir_var.get())).pack(
+            side="left", padx=(8, 0))
+        ttk.Button(live_buttons, text="📂 პროფილი",
+                   command=lambda: self._open_path(self.profile_var.get())).pack(
+            side="left", padx=(8, 0))
+        ttk.Button(live_buttons, text="← ლობი",
+                   command=lambda: self._show_page("lobby")).pack(side="right")
 
         # 6) log ------------------------------------------------------------
-        logframe = ttk.LabelFrame(outer, text="5. ლოგი", padding=6)
+        logframe = ttk.LabelFrame(live, text="ლოგი", padding=6)
         logframe.pack(fill="both", expand=True, **pad)
         self.log_text = tk.Text(logframe, wrap="none", height=16, font=("Consolas", 9),
                                 background="#111", foreground="#e6e6e6",
@@ -430,10 +503,27 @@ class BotWindow:
         logframe.rowconfigure(0, weight=1)
         logframe.columnconfigure(0, weight=1)
 
-        self.status_var = tk.StringVar(value="მზადაა")
-        ttk.Label(outer, textvariable=self.status_var, foreground="#0a5").pack(
-            fill="x", padx=10, pady=(0, 6))
+        self._show_page("lobby")
 
+    # -- pages ----------------------------------------------------------
+    def _show_page(self, name: str) -> None:
+        """Switch between the setup (lobby) and the live page."""
+        page = self.page_live if name == "live" else self.page_lobby
+        page.tkraise()
+        self.page_name = name
+        running = self.worker is not None and self.worker.is_alive()
+        self.live_tab.configure(text="🎮 თამაში — live" + (" ●" if running else ""))
+
+    def _live_changed(self) -> None:
+        """A live switch was flipped - it applies at once, no restart needed."""
+        self.log_line(
+            "live: 😞 მარცხი={} | 💰 ფსონის გაზრდა={} | 🔁 ავტო-რემატჩი={} | ⏱ ფიქრი={}".format(
+                "ჩართ." if self.lose_var.get() else "გამორთ.",
+                "ჩართ." if self.accept_stake_var.get() else "გამორთ.",
+                "ჩართ." if self.auto_rematch_var.get() else "გამორთ.",
+                "ჩართ." if self.human_delays_var.get() else "გამორთ.",
+            )
+        )
 
     # -- widgets <-> settings ------------------------------------------
     def _load_into_widgets(self) -> None:
@@ -452,6 +542,7 @@ class BotWindow:
         self.maxgames_var.set(str(s.max_games))
         self.rematch_var.set(str(int(s.rematch_wait)))
         self.think_var.set(s.think_delays)
+        self.human_delays_var.set(bool(getattr(s, "human_delays", True)))
         self.headless_var.set(bool(s.headless))
         self.closebrowser_var.set(bool(s.close_browser))
         self.trace_var.set(bool(s.trace_board))
@@ -480,6 +571,7 @@ class BotWindow:
         s.max_games = max(0, self._as_int(self.maxgames_var.get(), 0))
         s.rematch_wait = max(2.0, self._as_float(self.rematch_var.get(), 30.0))
         s.think_delays = self.think_var.get().strip() or "2,3,5,7"
+        s.human_delays = bool(self.human_delays_var.get())
         s.headless = bool(self.headless_var.get())
         s.close_browser = bool(self.closebrowser_var.get())
         s.trace_board = bool(self.trace_var.get())
@@ -616,6 +708,7 @@ class BotWindow:
 
         self.worker = threading.Thread(target=self._worker, args=(settings,), daemon=True)
         self.worker.start()
+        self._show_page("live")
 
     @staticmethod
     def _masked_argv(settings: Settings) -> List[str]:
@@ -631,6 +724,8 @@ class BotWindow:
             args.should_lose = self.lose_var.get
             args.should_accept_stake = self.accept_stake_var.get
             args.should_rematch = self.auto_rematch_var.get
+            # the 2/3/5/7 pauses can be switched off (and on) while the bot plays
+            args.should_think_delays = self.human_delays_var.get
             code = run_bot(args, log=self.log_line)
         except SystemExit as error:                  # argparse validation
             code = int(error.code or 0)
@@ -647,6 +742,7 @@ class BotWindow:
         text = code_to_text(code)
         self.status_var.set(f"{text} — {self.moves_seen} სვლა")
         self.log_line(f"=== {text} ===")
+        self._show_page(self.page_name)         # refresh the "●" marker on the tab
         if self.exit_when_done:
             self.root.after(400, self.root.destroy)
 
@@ -657,13 +753,33 @@ class BotWindow:
         self.log_line("… გაჩერების მოთხოვნა (მიმდინარე სვლის შემდეგ)")
         self.status_var.set("ჩერდება…")
 
-    def on_lose(self) -> None:
-        """Ask the running bot to lose this game (with a believable weak move)."""
-        if self.worker is None or not self.worker.is_alive():
-            messagebox.showinfo(APP_NAME, "ჯერ დააჭირე „დაწყებას“.")
+    def on_restart(self) -> None:
+        """Stop the bot and start it again with the same settings („↻ თავიდან“)."""
+        if self.worker is not None and self.worker.is_alive():
+            self.stop_event.set()
+            self.log_line("↻ განახლება: ვაჩერებ ბოტს…")
+            self.status_var.set("ჩერდება… (განახლება)")
+            self.root.after(200, self._restart_when_idle)
             return
-        self.lose_var.set(True)
-        self.log_line("😞 მარცხი ჩართულია - ბოტი საშუალო დონეზე ითამაშებს")
+        self.log_line("↻ თავიდან ვუშვებ…")
+        self.on_start()
+
+    def _restart_when_idle(self) -> None:
+        if self.worker is not None and self.worker.is_alive():
+            self.root.after(300, self._restart_when_idle)      # let it shut down
+            return
+        self.log_line("↻ თავიდან ვუშვებ…")
+        self.on_start()
+
+    def on_test_board(self) -> None:
+        """Open the interactive test board (``board_lab.py``) in its own window."""
+        command, workdir = test_board_command()
+        try:
+            subprocess.Popen(command, cwd=workdir, close_fds=True)
+        except OSError as error:
+            messagebox.showerror(APP_NAME, f"სატესტო დაფა ვერ გავხსენი: {error}")
+            return
+        self.log_line("🧪 სატესტო დაფა გაიხსნა ცალკე ფანჯარაში")
 
     def save_settings(self, quiet: bool = False) -> None:
         try:
@@ -710,6 +826,19 @@ def run_gui(selftest: bool = False, selftest_log: Optional[str] = None,
     return 0
 
 
+def test_board_command() -> "tuple[List[str], str]":
+    """How the panel starts the test board: the script, or this exe with a flag.
+
+    Inside the frozen exe there is no separate Python to run ``board_lab.py`` with,
+    so the same executable is started again with ``--test-board``.
+    """
+    if getattr(sys, "frozen", False):
+        return ([sys.executable, "--test-board"],
+                str(Path(sys.executable).resolve().parent))
+    script = Path(__file__).resolve().parent / "board_lab.py"
+    return [sys.executable, str(script)], str(script.parent)
+
+
 def _option(argv: List[str], name: str) -> Optional[str]:
     """Read ``--name value`` from a plain argument list."""
     if name in argv:
@@ -721,6 +850,11 @@ def _option(argv: List[str], name: str) -> Optional[str]:
 
 def main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if "--test-board" in argv:
+        # the panel's "სატესტო დაფა" button restarts this same executable this way
+        # (inside the frozen exe there is no separate Python to run a script with)
+        import board_lab
+        return board_lab.main([])
     return run_gui(
         selftest="--selftest" in argv,
         selftest_log=_option(argv, "--selftest-log"),

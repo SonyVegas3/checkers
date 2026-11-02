@@ -1,4 +1,4 @@
-# Checkers AI Engine (8x8: jokergame, Brazilian, Russian and English draughts rules)
+# Checkers AI Engine (8x8, JokerGame rules)
 
 A Python checkers engine built as the brain of an automated bot for the web game
 on jokergame.cc. It is a negamax searcher with alpha-beta pruning, a
@@ -6,14 +6,20 @@ transposition table, iterative deepening, jump quiescence and a hand tuned
 evaluation function, plus a Playwright bridge that plays the game in a real
 browser and an iOS app that plays it inside a WKWebView.
 
+There is **one** rule set in the whole project — `checkersbot/rules.py` — and every
+component (engine, bot, GUI, CLI, iOS app, test board) uses it.
+
 ```
 .
 ├── checkersbot/             # the shared core (no browser library in here)
-│   ├── board.py             # rules: 8x8 board, pieces, move generation (english/russian/
-│   │                        #   brazilian/joker), forced jumps, kinging, flying kings
+│   ├── rules.py             # the one rule set (JOKERGAME) + where each rule comes from
+│   ├── board.py             # 8x8 board, pieces, move generation, forced jumps,
+│   │                        #   kinging, flying kings, immediate capture removal
 │   ├── ai.py                # Minimax + alpha-beta search, evaluation, dynamic depth
 │   ├── site.py              # jokergame.cc protocol: SELECTORS, the two JS scripts,
 │   │                        #   SiteState, site_legal_moves + the Site interface
+│   ├── lab.py               # logic behind board_lab.py (positions, diagnostics, logs)
+│   ├── record.py            # JSON record of a played game
 │   └── bot.py               # CheckersBot: probe -> pick -> click -> verify
 ├── src/checkersbot_ios/     # the iPhone/iPad app (BeeWare Toga + WebView)
 │   ├── app.py               # window: start/stop, depth, seconds, WebView, log
@@ -21,6 +27,7 @@ browser and an iOS app that plays it inside a WKWebView.
 │   └── __main__.py          # Briefcase entry point
 ├── pyproject.toml           # Briefcase project (iOS build only, see "iOS app")
 ├── game.py                  # terminal CLI: play against the engine / engine self-play
+├── board_lab.py             # interactive test board: positions, paths, analysis, logs
 ├── web_bot.py               # Playwright bridge: reads jokergame.cc and clicks the moves
 ├── gui.py                   # tkinter control panel (the entry point of CheckersBot.exe)
 ├── build_exe.py             # PyInstaller build + smoke test for dist/CheckersBot.exe
@@ -75,14 +82,12 @@ shows the live log. No Python installation is needed for that.
 ```powershell
 python game.py                  # you are RED (bottom rows), engine is BLACK
 python game.py --ai-red         # engine plays RED and moves first
-python game.py --depth 9 --time 5                          # joker rules = what the site plays (default)
-python game.py --depth 9 --time 5 --rules english          # terminal only: American checkers
+python game.py --depth 9 --time 5                          # JokerGame rules (the only set)
 python game.py --selfplay 2 --depth 5 --time 1 --verbose   # automated smoke test
 ```
 
-> `--rules` exists **only in `game.py`** (a developer sandbox used by the tests).
-> The web bot, `CheckersBot.exe` and the iOS app always play the site's `joker`
-> rules — there is nothing to pick there.
+There is no `--rules` option anywhere: the engine, the bot, `CheckersBot.exe`, the
+iOS app and `board_lab.py` all play the same `JOKERGAME` configuration.
 
 Inside the game you can type a move (`c3-d4` for a step, `c3xd5` for a jump,
 multi-jumps may be written as `c3xe5xg7`) or one of the commands `moves`,
@@ -104,16 +109,31 @@ the target machine.
 dist/CheckersBot.exe            # double-click, or run from a terminal
 ```
 
-What the panel offers:
+What the panel offers — two pages, like the iOS app:
+
+* **🏠 ლობი — პარამეტრები**: everything is chosen here (where the run starts,
+  sign-in, stake, browser, engine, behaviour switches, start/diagnose/test-board);
+* **🎮 თამაში — live**: only what is needed while the bot plays — a status line,
+  the four **live switches** (😞 მარცხი, 💰 ფსონის გაზრდაზე დათანხმება,
+  🔁 ავტო-რემატჩი, ⏱ ადამიანური ფიქრი — they apply **immediately**, no restart),
+  `■ შეჩერება`, `↻ თავიდან გაშვება` (stop + start with the same settings),
+  the log folders, `← ლობი` and the live log.
 
 | group | what it does |
 | --- | --- |
 | **1. საიდან დაიწყოს თამაში** | `ავტორიზაცია → ლობი` (signs in with the e-mail/password, then walks the lobby), `ლობი` (the browser profile is already signed in) or `უკვე ღია დაფა` (no lobby at all — the bot only plays the table that is already open, `--no-lobby`) |
 | **2. ავტორიზაცია** | e-mail/phone + password; the password stays in memory and is **never** written to disk |
 | **3. მაგიდა და თანხა** | stake ladder exactly as the site renders it (`0` = 50, `1` = 5 000, `2` = 50 000, `3` = 200 000, `4` = 1 000 000, `5` = 10 000 000 coins), browser profile folder, browser (Playwright Chromium / installed Chrome / Edge) and log folder |
-| **4. ძრავა** | depth, seconds per move, poll interval, max moves, **max games**, **rematch wait**, **thinking times** (2,3,5,7 — the board rules are fixed to the site's `joker` set), plus headless / close-browser / board-trace / dry-run / probe / **💰 ფსონის გაზრდაზე დათანხმება** / **🔁 ავტო-რემატჩი** toggles |
-| **buttons** | `▶ დაწყება`, `■ შეჩერება` (cooperative, stops after the current move), `✔ წესების შემოწმება` (`--diagnose`), open log/profile folders, save settings |
-| **5. ლოგი** | live output of the bot (same lines as the CLI), mirrored to a file with `--log-file` |
+| **4. ძრავა და ქცევა** | depth, seconds per move, poll interval, max moves, **max games**, **rematch wait**, **thinking times** (2,3,5,7), plus headless / close-browser / board-trace / dry-run / probe / **😞 მარცხი (ადამიანურად)** / **💰 ფსონის გაზრდაზე დათანხმება** / **🔁 ავტო-რემატჩი** / **⏱ ფიქრი** switches — all of them are also on the live page |
+| **lobby buttons** | ▶ დაწყება, ✔ წესების შემოწმება (`--diagnose`), 🧪 სატესტო დაფა (`board_lab.py`; inside the exe the same executable restarts with `--test-board`), 💾 შენახვა, 📂 ლოგები, 📂 პროფილი |
+| **live buttons** | ■ შეჩერება (stops after the current move), ↻ თავიდან გაშვება, 📂 folders, ← ლობი |
+| **log** | live output of the bot (same lines as the CLI), mirrored to a file with `--log-file` |
+
+Every switch in the panel maps to a real `web_bot.py` flag (`--headless`,
+`--close-browser`, `--trace-board`, `--dry-run`, `--no-probe`, `--accept-stake`,
+`--no-rematch`, `--no-think-delays`, `--no-fit`), and a test builds the panel's
+command line with **all of them on** and parses it, so a dead control cannot
+creep in: `tests/test_gui.py::test_every_toggle_maps_to_a_real_cli_flag`.
 
 The settings (everything except the password) are stored in
 `%APPDATA%\CheckersBot\settings.json`, so the panel reopens exactly as you left it.
@@ -236,17 +256,19 @@ Notes from getting this green in CI:
 2. Press **▶ დაწყება**. It finds an opponent at the cheapest table
    (`STAKE = 0` → 50 coins), plays **depth 18 with 12 s per move** (`DEPTH` /
    `SECONDS` in `src/checkersbot_ios/app.py` — raise them for more strength) and
-   keeps going: when a game ends it asks for a rematch, waits up to 30 s, and then
+   keeps going: when a game ends it waits up to 30 s for the **opponent** to offer
+   a rematch (it never offers one itself), accepts it if it comes, and otherwise
    leaves the table and looks for a new opponent — until you press **■ გაჩერება**.
    Under the two buttons are three **switches**, each on its own row (a row next
    to the buttons would be pushed off a phone screen):
-   * **😞 მარცხი (ადამიანურად)** — the bot loses the current game with
+   * **😞 ადამიანური მარცხი** — the bot loses the current game with
      average-player moves, nothing is handed over for free (see "Losing on
      purpose"); it goes back to off when the bot stops;
    * **💰 ფსონის გაზრდაზე დათანხმება** — accept a raised stake (off by default:
      a raise is refused);
-   * **🔁 ავტო-რემატჩი** — offer a rematch after every game (on by default; turn
-     it off to leave the table immediately and look for a new opponent).
+   * **🔁 ოპონენტის რემატჩის ლოდინი** — wait for the opponent's rematch offer
+     after every game (on by default; turn it off to leave the table immediately
+     and look for a new opponent).
 
    All three are read live: flipping one while the bot plays takes effect at the
    next offer / next game, and the log shows their state at start and on change.
@@ -329,10 +351,10 @@ clicks, engine trusted blindly) — useful only for debugging. `--diagnose` prin
 the site's offers next to our own move generator for every stone of the current
 position, which is how the flying-king rules were confirmed.
 
-**Every capture is logged with its length**: `our move: c3xh8   [... | capture 2
-of 2]`. The site forces the *longest* capture (`maximum_capture`), so a shorter
-one is not even legal — the pair of numbers shows what the engine believed, which
-is exactly what is needed when the site seems to allow "one more piece". After a
+**Every capture is logged with its route and victims**: `our move: b2xb6   [... |
+takes 2: c3, c5   route d4 → b6]`. Any completed capture path is legal — the
+longest one is **not** forced (the user's observation of JokerGame) — so the log
+shows which route the engine chose and what it took. After a
 capture the bot also compares the site's stone count with the count its own move
 predicted: if the site kept a piece the model thought was taken (a chain that
 ended differently), it logs `! the site holds N stones after …, M were expected`
@@ -401,13 +423,14 @@ python web_bot.py --headless --max-moves 20 --poll 0.5
 | `--no-fit` | off | do not resize/nudge the page (keep the site's own layout) |
 | `--max-moves` | `0` (∞) | stop after N moves |
 | `--max-games` | `0` (∞) | stop after N games — the default plays on: rematch, then a new opponent |
-| `--rematch-wait` | `30` | seconds to wait for a rematch after a game (the site's own window) |
-| `--chat-wait` | `5` | seconds a chat invitation is left alone before the bot declines it |
+| `--rematch-wait` | `30` | seconds to wait for the **opponent's** rematch offer after a game (the bot never asks itself) |
+| `--chat-wait` | `5` | seconds a chat invitation is left alone before the bot declines it and plays on |
 | `--think-delays` | `2,3,5,7` | human-like pauses when the position was hard: the first move of a game is quick, later moves wait one of these at random (`0` = no waiting) |
-| `--quick-delays` | `1,2,3` | the same for an obvious move (one or two choices, a forced capture, one clearly best move) |
-| `--lose` | off | play weak moves on purpose (lose the game with a believable mistake) |
+| `--no-think-delays` | off | no human pause at all: the bot moves as soon as its search is finished (the panel's **⏱ ფიქრი 2/3/5/7 (ცოცხლად)** switch does the same live) |
+| `--quick-delays` | `1,2,3` | pauses used instead when the move was obvious |
+| `--lose` | off | **human loss**: play average-player moves on purpose, nothing is handed over for free |
 | `--accept-stake` | off | agree when the opponent raises the stake (off = the raise is declined, it costs coins) |
-| `--no-rematch` | off | do not offer a rematch after a game: leave the table and search a new opponent at once |
+| `--no-rematch` | off | do not wait for a rematch: leave the table and search a new opponent at once |
 | `--max-errors` | `5` | stop after N consecutive failures (screenshots are saved to `logs/`) |
 | `--no-probe` | off | trust the engine without asking the site (debug only) |
 | `--trace-board` | off | log the parsed board before every move |
@@ -425,21 +448,19 @@ it:
 
 1. the lobby is walked once (**Play a game → Random people → stake**);
 2. the game is played to the end;
-3. the bot **offers the rematch itself** (unless **🔁 ავტო-რემატჩი** / the panel
-   checkbox / `--no-rematch` turned it off, in which case step 5 comes at once):
-   the finish dialog keeps **Rematch** for
-   30 s, and the bot asks through the site's own API
-   (`init_play.rematch({opponent_id})` — the exact call the button makes), so it
-   works in any site language. The request is sent at once and repeated when the
-   site is no longer showing its "waiting for the opponent" dialog (a request can
-   be lost while the page is still loading, and the site's offer expires) —
-   `rematch offered to the opponent (requested:123) - waiting for them to accept`;
-4. if the opponent accepts — or if *they* offered first — the page reloads with a
-   new `game_id` and the bot carries on (a rematch can swap the colours, so it
-   calibrates itself again); an incoming offer is accepted with the same call;
-5. if nobody accepts, or the site offers no rematch at all, the bot leaves the
-   table, reloads the lobby and searches a new opponent — then it is back at
-   step 2.
+3. the bot **does not ask for a rematch**. It keeps the finished table open for
+   `--rematch-wait` seconds (30 by default, the site's own window) and watches the
+   page for the **opponent's** offer: as soon as `init_users.rematch_opponent` /
+   the site's `.rm-offer` banner appears, it accepts it with the same client call
+   the banner's button makes (`init_play.rematch({opponent_id})`, or a click on
+   that banner) — the log says
+   `the opponent offered a rematch - accepted (accepted:123); waiting for the new game`;
+4. once the page reloads with a new `game_id` the bot carries on (a rematch can swap
+   the colours, so it calibrates itself again);
+5. if no offer arrives within the wait, or a rematch is not wanted at all
+   (**🔁 ოპონენტის რემატჩის ლოდინი** / `--no-rematch`), it leaves the table,
+   reloads the lobby and searches a new opponent — then it is back at step 2. The
+   log line is `no rematch offer from the opponent in 30s`.
 
 `--rematch-wait` tunes step 3 and `--max-games` stops after N games; the panel has
 the same two fields (`მაქს. თამაში`, `რემატჩის ლოდინი`). `■ შეჩერება` / Ctrl+C
@@ -456,8 +477,13 @@ alternative (the engine reports the gap to the runner-up, ≥ 1.5 men counts as
 obvious) waits one of the shorter `--quick-delays` (default `1,2,3`) instead of
 seven seconds. The log says which one it used:
 `thinking 3.0s ... (easy position)` / `thinking 7.0s ... (thinking)` /
-`thinking 0.8s ... (opening)`. Set `--think-delays 0` (or clear the panel field)
-to switch it off.
+`thinking 0.8s ... (opening)`.
+
+The pauses can be switched **while the bot plays**: the panel's
+**⏱ ფიქრი 2/3/5/7 (ცოცხლად)** checkbox is polled before every move — off means no
+pause at all, the bot moves as soon as its search is finished (only the search time
+remains). The same at start-up: `--no-think-delays` (or `--think-delays 0`, or an
+empty panel field).
 
 **Fast lobby.** Returning to the lobby used to wait up to 30 s *after every
 click* (`Play a game` → `Random people` → stake are three separate dialogs, and
@@ -512,12 +538,12 @@ topmost dialog while `opponent.coins > 0`, and its first button is the accept on
 clicked the bot saves `logs/stake-offer-*.html/.png` once, so the markup can be
 checked.
 
-### Losing on purpose („მარცხი (ადამიანურად)“)
+### Losing on purpose („ადამიანური მარცხი“)
 
-Both UIs have a switch that makes the bot **lose the current game** — the
-**😞 მარცხი** button next to Start/Stop in the panel (it ticks the checkbox in
-group 4), the **😞 მარცხი (ადამიანურად)** switch in the iOS app, and `--lose` on
-the CLI.
+Both UIs have **one** loss switch (the old „მარცხი“ and „მარცხი (ადამიანურად)“
+labels are merged into this single control): the **😞 ადამიანური მარცხი** button
+next to Start/Stop in the panel (it ticks the checkbox in group 4), the
+**😞 ადამიანური მარცხი** switch in the iOS app, and `--lose` on the CLI.
 It does **not** play like a beginner: it plays like an **average club player**,
 so a loss looks like a bad day, not like a thrown game:
 
@@ -628,57 +654,74 @@ request handler. `move.to_dict()` is ready to be JSON-serialised for the
 front-end, and `Board.from_matrix` / `Board.from_rows` rebuild a position from
 whatever the web client sends.
 
-## Rules implemented
+## The rule set (JokerGame)
 
-Four rule sets share one generator, chosen with `Board(..., rules=...)`.  **Only
-`joker` is exposed to the bots**: `web_bot.py`, `CheckersBot.exe` and the iOS app
-have no rules option at all — they always play the site's rule set.  The other
-three exist for `game.py` (a developer sandbox) and for the tests that prove
-which rule set the site follows.
+There is exactly one rule set in the project: `checkersbot/rules.py` defines
+`JOKERGAME`, and the engine, the web bot, `CheckersBot.exe`, the iOS app, `game.py`
+and `board_lab.py` all use it. `Board(..., rules=...)` accepts the `Rules` object or
+its name `"joker"`; `resolve()` raises on anything else, so there is no English,
+Russian or Brazilian mode any more.
 
-### `joker` — what jokergame.cc plays (the only one the bot uses)
+### What JokerGame does
 
-Everything from `brazilian` below, **plus Russian promotion**: when a man lands
-on its far row *in the middle of a capture*, it is crowned on the spot and
-**keeps capturing as a (flying) king in the same move**.  A single move can
-therefore be "man jumps, is crowned, the new king jumps again", and the piece
-finishes the move as a king (`Move.promotes` is set, the search and
-`make_move()` both handle it).
-
-This was found in live play: the site offers the continuation, so a bot that
-stops at the crown row plays a move the server does not consider finished and
-then has to resynchronise.  The web bot, the panel, the CLI defaults and the iOS
-app all use `joker`; `brazilian` keeps the strict international behaviour.
-
-### `brazilian` — 8x8 international draughts
-
+* 8x8 board, 32 dark squares, 12 men per side; red sits at the bottom (rows 5-7)
+  and moves up, black on top and moves down, red moves first;
+* a man steps one square diagonally forward and is crowned on the far row;
 * **kings fly**: a king slides any number of empty squares along a diagonal and
-  may capture an enemy piece **from any distance**, landing on **any** free
-  square behind it, so one king can sweep several pieces in a single move;
-* **men capture backwards too**: a man jumps in all four diagonal directions
-  (it still *moves* forwards only and is crowned when it lands on the far row);
-* **the longest capture is compulsory**: `capture_moves()` keeps only the
-  sequences that take the maximum number of pieces;
-* captured pieces stay on the board until the move ends, so a piece cannot jump
-  the same piece twice nor pass over a piece it already took;
-* a chain must be played to the end; a man that lands on the far row is crowned
-  and the move ends immediately (no further jumps as a king).
+  takes an enemy piece **from any distance**, landing on **any** free square behind
+  it, so one king can sweep several pieces in a single move;
+* **men capture backwards too**: a man jumps in all four diagonal directions (it
+  still *moves* forwards only);
+* **capturing is compulsory**: `Board.generate_moves()` returns captures only when
+  at least one exists, so a quiet move can never be picked while a jump is on;
+* **a chosen chain must be finished**: the generator only returns paths that end
+  where no continuation is left, so stopping after `b2→d4` (when `d4` can still
+  capture) is not a legal move;
+* **on a branch any legal continuation may be chosen**;
+* **the longest capture is *not* compulsory**: every completed path is legal,
+  whatever number of pieces it takes (the user's observation of JokerGame);
+* **crowning inside a capture continues**: a man that lands on its far row in the
+  middle of a capture is crowned on the spot and keeps capturing as a (flying)
+  king in the same move (`Move.promotes` is set);
+* **a taken piece leaves the board immediately**, so a king may land on a square it
+  has just cleared and continue in the opposite direction (user's observation);
+* a side with no legal move loses; `game.py` additionally declares a draw after 40
+  moves per side without a capture or a promotion.
 
-### `russian` — Russian draughts / *damka*
+### Worked example: two capture paths of different length
 
-Same as above but men capture **forwards only** and any capture (not just the
-longest) may be chosen.
+The position below (red to move) is a regression test and a preset in
+`board_lab.py` ("ორი გზა, 2 და 3 ქვა (b2)"):
 
-### `english` — American checkers / English draughts
+```
+8  .....b..
+7  ......b.
+6  .....b.b
+5  ..b...b.
+4  ........
+3  ..b.b.b.
+2  .r......
+1  ........
+   abcdefgh
+```
 
-* men step one square diagonally forward, kings step one square in any of the
-  four diagonal directions (no flying kings);
-* captures jump over an adjacent enemy piece onto the empty square behind it;
-  several jumps are chained into one move.
+`b2` takes `c3` and lands on `d4`, where two continuations exist, so the move is
+not finished there. Both completed paths are legal:
 
-### How the site's rule set was identified
+| path | landing squares | pieces taken |
+| --- | --- | --- |
+| `b2xb6` | `d4`, `b6` | `c3`, `c5` |
+| `b2xh4` | `d4`, `f2`, `h4` | `c3`, `e3`, `g3` |
 
-Not by guessing — by replaying live games:
+`b2→d4` alone is rejected (a continuation exists), and the two-piece path is **not**
+removed because a three-piece alternative exists — that is the rule that used to be
+wrong. `tests/test_board_lab.py` asserts exactly this, and the comparison mode feeds
+both paths to the search with the same depth and clock, without preferring either.
+
+### How the rule set was identified
+
+Not by guessing — by replaying live games, plus the user's observation for the two
+points that a replay cannot settle (immediate removal and "longest is optional"):
 
 1. A live game showed the site's king taking two men **from a distance** and
    landing far behind them (`c1xe7`, capturing `e3` and `f6`, landing `g5`
@@ -687,35 +730,24 @@ Not by guessing — by replaying live games:
    (`f6xe5xc5`, landing `d4` then `b6`) — impossible for English *and* Russian
    men;
 3. a 30-move live game was then replayed board by board: **every one of our
-   moves and every opponent reply is legal under `brazilian` rules and no other
-   rule set** (`0 unexplained position(s)`), which is what the two unit-test
-   positions above encode;
+   moves and every opponent reply is legal under our generator** (`0 unexplained
+   position(s)`);
 4. live probes of our kings now match the site square for square, e.g.
    `probe e5 (king): site b8, c7, g7, d6, f6, d4, f4, c3, g3, b2, a1 | engine …`
    (identical lists);
-5. one more difference showed up in live play: a man that captures onto the
-   promotion row must **keep capturing as a king** — the site offers the
-   continuation, strict international rules do not.  That is the `joker` rule
-   set, and it is what the bot plays by default now.
+5. a man that captures onto the promotion row must **keep capturing as a king** —
+   the site offers the continuation, strict international rules do not;
+6. the **immediate removal** of a taken piece and the fact that **the longest
+   capture is not compulsory** come from the user's observation of JokerGame; they
+   are marked as such in `rules.py`, in the test board's rule tab and in every
+   saved log (`rules_basis`), and they are not claimed to be verified by the code.
 
 `web_bot.py --diagnose` prints that same stone-by-stone comparison for any live
 position, so the rules can be re-verified at any time.
 
-Common to all rule sets:
-
-* 8x8 board, 12 men per side, red at the bottom moving up, black on top moving
-  down, red moves first (`web_bot.py` calibrates which engine colour we are from
-  the site's own answers);
-* **capturing is mandatory**: `Board.generate_moves()` only returns capture
-  sequences when at least one exists, so the search can never pick a quiet move
-  while a jump is available;
-* a side with no legal move loses;
-* `game.py` additionally declares a draw after 40 moves per side without a
-  capture or a promotion.
-
-The English generator is validated by `perft` against the published node counts:
-**7, 49, 302, 1469, 7361** for depths 1-5 (identical for the other rule sets in
-the opening, because no king exists yet and men's *quiet* moves are the same).
+The move generator is validated by `perft` against the published English node
+counts: **7, 49, 302, 1469, 7361** for depths 1-5 (the opening has no kings, and
+men's *quiet* moves are the same, so these counts hold here too).
 
 ## How the search works
 
@@ -727,8 +759,9 @@ the opening, because no king exists yet and men's *quiet* moves are the same).
 | Dynamic depth | `CheckersAI.dynamic_depth()`: crowded boards use `max_depth`, endgames add up to `max_extra_depth` extra plies (e.g. 6 -> 12 with fewer than 7 pieces) |
 | Jump quiescence | when the depth budget runs out while the side to move is forced to jump, the search keeps following the jumps, which removes the horizon effect (and the very last quiescence node is evaluated without generating moves at all) |
 | Move ordering | transposition move first, then captures by number of pieces, promotions and piece-square gain - this is where most of alpha-beta's speed comes from |
-| Cached rule flags | `flying_kings` / `men_capture_backwards` / `maximum_capture` are decided once per board instead of comparing rule strings in every node |
+| Cached rule flags | `flying_kings` / `men_capture_backwards` / `promotion_continues` are read once from the shared `Rules` object instead of comparing rule strings in every node |
 | `ROW_OF` table | promotion checks in the move generator index a tuple instead of calling `row_of()` millions of times |
+| Capture preference | JokerGame allows **any** completed capture chain (the longest is not compulsory, see `checkersbot/rules.py`), so the engine plays the move that takes more pieces when its evaluation is within `CAPTURE_MARGIN` (60) of the best one - `take as much as you can` without throwing the position away |
 
 Evaluation (`ai.evaluate`, centipawns, from red's point of view):
 
@@ -781,6 +814,174 @@ strength:
   native port is the single biggest remaining gain; the databases would make
   the last 8-10 pieces perfect.
 
+## Interactive test board (`board_lab.py`)
+
+A Georgian-language board for checking, by hand, what the engine actually does::
+
+    python board_lab.py
+
+* **Position editor** — click squares to place a red man/king or a black man/king,
+  or erase (`წაშლა`; right click also erases). Toolbar: clear, start position, undo,
+  save/open a position (JSON in `test_positions/`), presets for the interesting
+  cases (including "ორი გზა, 2 და 3 ქვა (b2)" — the two-path position above). The
+  side to move is selected separately; the rules are always JokerGame and the
+  preset list has no rule option.
+* **Coordinates** are drawn on the board edges and inside every playable square
+  (`a1 … h8`). Unusual positions are *reported* (pieces on light squares, more than
+  12 pieces, no legal move, empty side) and never silently repaired.
+* **Moves and captures** — all legal moves with their full route, target squares
+  when a piece is selected, numbered hops with the piece taken on each hop, step
+  forward/back, and a separate button that plays the *complete* move on the board
+  (one undo step). A playback step never changes the position. Different jump
+  chains with the same start and end square are listed separately.
+* **Capture diagnostics** — the real generator is asked: does a capture exist, how
+  many completed paths are there, how many pieces each one takes, when a man is
+  crowned and keeps capturing. There is no "excluded path" list any more: every
+  completed path is a legal move, whatever its length.
+* **Bot analysis** — choose the time limit and depth cap; shows the chosen move and
+  its whole route, the score (positive = good for the side to move), the completed
+  depth, nodes, time, a probable continuation read from the transposition table,
+  and the static evaluation split into its components (separate from the searched
+  score). A score of `არ შეფასდა` means the search finished no iteration at all —
+  it is never shown as `0`. The analysis runs in a worker thread, the window stays
+  responsive and `შეჩერება` stops it after the last completed iteration.
+  `შეადარე ყველა სვლა` scores **every** legal first move with one depth target and
+  one shared clock, with no preference for any of them; only rows that finished that
+  depth are marked `მნიშვნელობა ზუსტი`, and a "best move" is named from the search
+  only when every row is exact **at the same depth**.
+* **Depth, exactness and proof are three different things** — see
+  "Analysis reliability" below: the depth is half-moves from the board (root move
+  included, a jump chain is one ply), `მნიშვნელობა ზუსტია` only says the value is a
+  finished iteration at that depth, and `დადასტურებული შედეგი` comes from a separate
+  full-width proof search (`checkersbot/solver.py`).
+* **Stale results** — changing the position or the side to move *invalidates* the
+  analysis on screen: the text and the comparison table are cleared and a late
+  worker result for the old position is discarded (it used to stay visible, which
+  made an old "5 paths" answer look like the answer for the new position).
+* **Rules tab** — the JokerGame rule text (`lab.JOKERGAME_TEXT`, the same words in
+  the saved log), which of its properties are visible in the current position, the
+  number of capture paths and their lengths. It states that the removal rule and
+  "the longest capture is optional" come from the user's observation and are not
+  verified independently. Free-text fields store the path seen on the site and a
+  note, so a real example can be compared later.
+* **Logs** — every analysis writes `test_board_logs/analysis_<stamp>.json` plus a
+  readable `.txt`: the exact position, side, rules and `rules_basis`, engine
+  version, the "history is unknown" note (a hand-built board cannot detect a
+  repetition draw), all legal moves, all completed capture paths with their
+  lengths, the chosen move, the alternatives, and the site note.
+* **Launcher** — `open_test_board.bat` (double-click) starts the board on the
+  reported position (`--preset b2`; the fragment is ASCII because a `.bat` is read
+  in the console code page). From a shell: `python board_lab.py --preset b2`
+  (`--list-presets` prints the names, `--analyse 3` runs an analysis at once).
+
+> **Backgammon** has its own test board with the same idea:
+> `open_backgammon_board.bat` (or `backgammon\board_lab.py`) opens
+> `backgammon/board_lab.py` — arrange a position, ask the bot and see *why*, play a
+> whole game against it (record / undo / save) and measure every decision against
+> the strong Open Sage reference. See `backgammon/README.md` § 10a.
+
+## Analysis reliability
+
+Three questions are answered separately, because they are different questions:
+
+| Question | Where it comes from | How to read it |
+| --- | --- | --- |
+| "how good is this move as far as the search looks?" | `ai.choose_move` (alpha-beta, depth limited) | `ქულა`, positive = good for the side to move; `None` = not evaluated, never `0` |
+| "is that number exact?" | a **finished** iteration at that depth | `მნიშვნელობა ზუსტია` — exact *for that depth*, not a bound, and **not** a proof of the result |
+| "who wins with perfect play, and in how many half-moves?" | `checkersbot/solver.py` (full width, no evaluation) | `დადასტურებული შედეგი`, `proof.plies`, `best_line` |
+
+**Depth unit.** One ply = one half-move counted **from the position on the board,
+including the root move**. A complete jump chain is one ply, because it is one move.
+The engine's cap is a *base* depth: `dynamic_depth` adds up to 6 plies in endgames, so
+the completed depth may exceed the cap (the panel shows cap, target and completed
+depth). The comparison panel searches each child with `depth - 1` plies and rebases
+the result (`1 + child depth`), so the two panels always use the same unit; the raw
+child number is kept as `child_depth`.
+
+**Score normalisation.** Every row of the comparison is negated into the perspective
+of the side to move at the board, so all alternatives of one position and one side
+carry the same sign convention (in the position below every row is negative: red is
+lost). Mate scores are `MATE - ply`; the distance reported for a row is
+`_mate_in(score) + 1`, because the child search counted plies from the child position.
+
+**Proof, not a sample line.** `solver.solve()` walks *every* legal reply with two
+predicates - `win in k` (one line that beats all replies) and `loss in k` (all of the
+loser's moves lose) - iterating `k` upwards, so the first `k` that succeeds is exactly
+the distance under best play. `solver.best_line()` returns that line and the tests walk
+it move by move: every move legal, length equal to `plies`, the loser stuck at the end.
+One nice continuation proves nothing: after `b2xh4` black has a winning move, yet the
+careless `f6-e5` leads to a proven **win for red** - a test, not a claim.
+
+**What the report of this position says** (the position above, red to move):
+
+| move | ordinary score | depth (root unit) | exact at that depth | proven |
+| --- | --- | --- | --- | --- |
+| `b2xb6` | −99993 | 6 | yes | loss in **8** plies |
+| `b2xh4` | −99999 | 2 | yes | loss in **2** plies |
+
+Both paths lose; the proven best resistance is `b2xb6` with 8 half-moves, i.e. 6 more
+than `b2xh4`. The proof line is
+`b2xb6 f8-e7 b6-a7 e7-d6 a7-b8 g5-f4 b8xe5 f6xd4` - red's last man is taken on ply 8.
+The ordinary depths differ (6 vs 2) because the search stops as soon as it sees a
+mate, so **no winner is named from the search** here: the panel says that instead of
+comparing unequal numbers, and reports the proven result on its own line.
+
+## Measurement and tuning (2026-10-27)
+
+Everything below is measured on this machine (i5-10300H, Windows 11, Python 3.10)
+with frozen positions, so a change can be re-checked instead of believed.
+
+* **Reference engine.** `checkersbot/ai_baseline.py` is a frozen copy of
+  `checkersbot/ai.py` as it was at commit `b8b1d9f` (comment-only header, same
+  code). Every comparison uses it: `--b checkersbot.ai_baseline`.
+* **Benchmark.** `python scripts/engine_bench.py --engine checkersbot.ai --seconds 2`
+  runs six frozen positions (`opening`, `midgame`, `endgame_4`, `tactical_chain`,
+  `tactical_multi`, `king_double`) and records the reached depth, the nodes, the
+  time and the peak memory in `logs/bench_*.json`. `--seconds 0 --depth 8`
+  compares the *same work* (equal depth) instead of the clock.
+* **Matches.** `python scripts/engine_match.py --games 16 --seconds 0.15 --a checkersbot.ai --b checkersbot.ai_baseline`
+  plays the JokerGame rules (the only rule set - `engine_match.py` has no rules
+  option), **a pair of games from the same random opening with the colours
+  swapped**, and prints W/D/L. A 16-game match is noisy: with two *identical*
+  engines the tool returned 53.1 % (6 W / 5 L / 5 D), i.e. ±12 % is inside noise -
+  small differences need many more games before they mean anything.
+* **Where the time goes** (cProfile, depth 8, midgame): move generation 63 %
+  (`capture_moves` 1.25 s + `quiet_moves` 0.66 s of 3.12 s), the search itself 14 %,
+  `evaluate` 11 %, move ordering 6 %. The move generator - pure Python - is the
+  real bottleneck; a native port is the biggest single gain, and it is *not* done.
+* **Time budget (the biggest measured gain).** `info.step_timeout` is a per-move
+  clock of about 60 s (57-60 s at every sample of every logged game) and the bot
+  now derives its budget from it (`checkersbot/time_manager.py`): clock minus 6 s
+  of reading/probing/clicking minus 20 % safety, soft limit at 75 % of that. On the
+  frozen positions that is 42 s instead of the old fixed 12 s:
+
+  | position | 12 s | 42 s (same 60 s clock) |
+  | --- | --- | --- |
+  | opening | depth 11 | **depth 12** |
+  | midgame | depth 12 | **depth 14** |
+  | endgame_4 | depth 15 | **depth 19** |
+
+  `--time N` is now a *cap* on top of that (the panel and the iOS app still pass
+  their own value); `--time-overhead` changes the reserved seconds. Without a site
+  clock the old 12 s default stays.
+* **Search refinements, measured one by one** (`CheckersAI(use_killers=…,
+  use_pvs=…, use_aspiration=…)`, all **off by default**):
+
+  | change | nodes at equal depth (6 positions) | verdict |
+  | --- | --- | --- |
+  | PVS | 566 062 → 549 957 (−2.8 %) | neutral, kept as a knob |
+  | aspiration windows | 566 457 (±0) | neutral, kept as a knob |
+  | killer + history ordering | 1 292 465 (**+128 %**) | clearly worse here, off |
+
+  At equal *time* the three of them together reached the same depth as the plain
+  search on these positions, so no strength claim is made for them.
+* **Game records.** Every game writes `logs/game_record_<stamp>.json`: the position
+  the bot first saw, our side, every move with its captures, score, depth, nodes,
+  seconds and the time budget it was given, site mismatches, and the result **as
+  the site states it** (`gf-won` / `gf-lost` on the finish dialog). If the dialog
+  does not say, the result stays `"unknown"` - the evaluation sign is not evidence.
+  No names, e-mails, passwords or tokens are written.
+
 ## Repetition handling
 
 `CheckersAI.choose_move(board, history=...)` accepts the list of
@@ -816,27 +1017,54 @@ Strength checks (all with a 0.2 s budget per move):
 python -m unittest discover -s tests -t . -v
 ```
 
-81 tests. `tests/test_engine.py` (43) covers the starting position,
-perft, mandatory captures, chained jumps, king jumps in every direction,
-promotion (including "the move ends when a man is crowned"), make/unmake
-round-trips, winner detection, move parsing, evaluation symmetry, the Russian
-flying-king rules (slides, long captures, landing anywhere behind, no double
-capture, men still capture forwards only), the Brazilian rules (backwards man
-captures exactly as the site played them, compulsory longest capture), the
-`joker` rules (a crowned man keeps capturing as a king, the same move ends as a
-king, make/unmake of such a chain, the engine picks it) and the
-search (legality, safe-jump choice, forced wins, time limit, repetition
-avoidance, dynamic depth).
+227 tests. `tests/test_engine.py` (51) covers the starting position, perft
+(7 / 49 / 302 / 1469 for the opening plies, 7482 at ply 5 where the first capture
+appears and men may also take backwards), mandatory captures, chained jumps, king
+jumps in every direction, promotion, make/unmake round-trips, winner detection,
+move parsing, evaluation symmetry, the **only** rule set (flying kings that slide
+and capture at a distance and land on any free square behind the taken piece, men
+that capture backwards, a man crowned inside a capture that keeps capturing as a
+king, immediate removal, no maximum-capture filter, the two capture paths of the
+report position in both pieces and in both colours, the engine and the real bot
+accepting either path, other rule names being refused) and the search (legality,
+safe-jump choice, forced wins, time limit, repetition avoidance, dynamic depth,
+`only move` reported as *not evaluated* instead of a fake 0).
+`tests/test_board_lab.py` (61) covers what the test board shows: the displayed
+moves are exactly the engine's, every completed capture path is legal and none is
+ever excluded, the two paths of the report position (2 and 3 pieces) with
+`b2→d4` refused because it can continue, the 8-king-route position in both
+colours with the diagonal-segment check, the position file round-trip **and its
+migration** (an old `brazilian`/`end` file is converted to JokerGame and the change
+is recorded), the equal-conditions comparison of both paths, the log contents
+(no "maximum capture filter" line any more, the JokerGame rule text instead) and
+the window (no rule/removal selectors, the analysis is invalidated when the
+position changes, a late result for the old position is discarded, the launcher
+finds the preset). It also pins the **analysis reliability**: the solver's outcome
+and distance on small positions, agreement with an independent full-width
+reference search in both colours, the depth unit (`depth == child_depth + 1`, the
+root move included), the score direction (all rows of one side share one sign),
+the mate distance measured from the root (`mate_in == proof.plies`), that a proven
+result is never turned into a search winner, that `best_line()` is legal and ends
+at the stated distance, and that an unproven result is reported as
+"ამ სიღრმეზე ... არ არის დადასტურებული · ეს შეფასებაა, არა მტკიცება".
 `tests/test_web_bot.py` (11) covers the coordinate mapping, jump-path and
 first-landing reconstruction, site-move filtering (including forced captures),
 DOM state parsing, and real Playwright runs against `tests/mock_checkers.html`:
 normal play, a forced double jump (`b2xd4xf6`, two landings clicked) and a
 180°-flipped board that the bot has to calibrate itself. The browser tests are
 skipped automatically when Chromium is missing.
-`tests/test_gui.py` (15) covers the panel's logic: the settings <-> command line
+`tests/test_gui.py` (21) covers the panel's logic: the settings <-> command line
 mapping for all three start modes, the stake ladder, the engine/browser options,
-that the password is never written to the settings file, and the settings
-round-trip.
+the **live ⏱ thinking switch** (`--no-think-delays`), the command the
+**🧪 სატესტო დაფა** button runs (the script, or the frozen exe with `--test-board`),
+that there is exactly **one** „ადამიანური მარცხი“ control, that the password is
+never written to the settings file, and the settings round-trip.
+`tests/test_auto_loop.py` (30) drives ``CheckersBot._next_game`` through a fake
+site: the bot **never offers** a rematch, it accepts the opponent's offer and
+keeps the table, it leaves for a new opponent when no offer comes within
+``rematch_wait`` (or the switch is off), the live ⏱ switch stops and restarts the
+human pauses, plus the offer/answer loop (stake, draw, chat) and the
+"lose like a human" move choice.
 `tests/test_ios_site.py` (11) covers the iOS bridge: the JSON transport
 (`read_state`, `click_stone` / `click_square`, the `canAction` poll, a dead
 WebView becoming a `SiteError`, the "never ask for a password" rules) and, with
@@ -855,13 +1083,12 @@ jump and a full `bot.run(max_moves=1)`. Skipped automatically without Chromium.
   engine has no endgame tablebase, only search plus the heuristic evaluation.
 * Draws are declared by the caller (`game.py` uses the 40 move rule); the
   search itself treats the game as a win/loss tree.
-* The default rule set is `--rules joker`: flying kings, men capture backwards,
-  the longest capture is compulsory **and** a man crowned in the middle of a
-  capture keeps capturing as a king — that is what jokergame.cc plays, verified
-  by replaying live games (see "Rules implemented"). `--rules brazilian` is the
-  strict international variant (the move ends on the crown row),
-  `--rules russian` (men capture forwards only, any capture) and
-  `--rules english` (American checkers) are kept as well.
+* The one rule set is JokerGame (`checkersbot/rules.py`): flying kings, men
+  capture backwards, capturing is compulsory but **the longest capture is not**
+  (every completed path may be played), a taken piece leaves the board at once,
+  and a man crowned in the middle of a capture keeps capturing as a king. The
+  board, the bot, the panel, the CLI, the iOS app and the test board all use it;
+  there is no `--rules` switch anywhere.
 * `web_bot.py` automates a real browser session on a real account. Use it only
   where automated play is allowed by the site's rules, and keep the request rate
   sane (`--poll`, `--time`).

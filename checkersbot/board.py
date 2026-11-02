@@ -1,4 +1,4 @@
-"""Checkers rules engine for 8x8 boards: American checkers and Russian draughts.
+"""Checkers rules engine for 8x8 boards - the JokerGame rule set only.
 
 Board layout
 ------------
@@ -8,7 +8,7 @@ Pieces only ever stand on the 32 dark squares, i.e. squares with
 ``(row + col) % 2 == 1``.
 
 Pieces
-------
+======
 =============  =====
 ``EMPTY``      0
 ``RED_MAN``    1
@@ -22,51 +22,38 @@ BLACK starts at the top (rows 0-2) and moves downwards.  RED moves first.
 
 Rules
 -----
-Rule sets are chosen with ``Board(..., rules=...)``:
+There is exactly **one** rule set in this project, :data:`checkersbot.rules.JOKERGAME`
+(see that module for where every rule comes from).  ``Board(..., rules=...)``
+accepts the :class:`~checkersbot.rules.Rules` object or its name ``"joker"`` and
+rejects anything else - there is no English, Russian or Brazilian mode any more:
 
-``english`` (American checkers, the default)
-    * men step one square diagonally forward, kings step one square in any
-      diagonal direction (no flying kings);
-    * a capture is a jump over an adjacent enemy piece onto the empty square
-      directly behind it, several jumps are chained into a single move.
+* kings **fly**: they slide any number of empty squares along a diagonal and take
+  an enemy piece from any distance, landing on any free square behind it;
+* men step diagonally forward and capture in all four directions;
+* capturing is **mandatory** whenever a capture exists and a chosen chain must be
+  followed while a capture is still available on it - but the **longest** capture
+  is *not* compulsory: any completed path may be played;
+* a man crowned on the far row ends the move (outside a capture) or, when it is
+  crowned **inside** a capture, keeps capturing as a king in the same move;
+* a taken piece leaves the board **immediately**, so the king may land on a free
+  square it has just cleared, pass over squares that are already empty because of
+  this same move (its own start square included) and continue capturing in any
+  allowed diagonal - the opposite direction as well.  Every landing re-searches
+  the captures, a piece can never be taken twice and a path ends only when no
+  continuation is left; how many pieces it took is **not** a filter;
+* the side with no legal move loses.
 
-``russian`` (Russian draughts / ``damka``)
-    * men step and capture forwards only, exactly as above;
-    * **kings fly**: they slide any number of empty squares along a diagonal,
-      and when they capture they jump an enemy piece from any distance and
-      may land on any free square behind it, so one king can sweep several
-      pieces along a diagonal in a single move;
-    * captured pieces stay on the board until the move ends, so a king may
-      not pass over the same piece twice nor land on a square it already took.
-
-``brazilian`` (Brazilian draughts / international draughts)
-    * everything from ``russian``;
-    * men also **capture backwards** (they still only move forwards);
-    * the **longest capture** is compulsory.
-
-``joker`` (what jokergame.cc actually plays - Brazilian + Russian promotion)
-    * everything from ``brazilian``;
-    * a man that lands on its far row **during a capture** is crowned on the
-      spot and **keeps capturing as a (flying) king in the same move**, so one
-      move can contain a crown and further jumps behind it.  ``Move.promotes``
-      is set and the piece finishes the move as a king.
-
-Common to all rule sets:
-
-* capturing is mandatory: as soon as a capture exists it must be played
-  (the player may pick any of the available capture sequences);
-* a man that reaches the far row outside a capture is crowned and the move ends;
-* a side that cannot move loses.
-
-The module is written for speed: move generation uses pre-computed
-neighbour tables and the search in :mod:`ai` mutates the board in place
-through :meth:`Board.make_move` / :meth:`Board.unmake_move`.
+The module is written for speed: move generation uses pre-computed neighbour
+tables and the search in :mod:`ai` mutates the board in place through
+:meth:`Board.make_move` / :meth:`Board.unmake_move`.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
+
+from .rules import JOKERGAME, RULES, Rules, resolve
 
 BOARD_SIZE = 8
 SQUARE_COUNT = 64
@@ -151,14 +138,14 @@ def is_man(piece: int) -> bool:
     return piece == RED_MAN or piece == BLACK_MAN
 
 
-RULES = ("english", "russian", "brazilian", "joker")
+RULES = tuple(RULES)          # ("joker",) - the only rule set of the project
 DIAGONALS: Tuple[Tuple[int, int], ...] = ((-1, -1), (-1, 1), (1, -1), (1, 1))
 
 
 def _build_rays() -> Tuple[Tuple[Tuple[int, ...], ...], ...]:
     """``RAYS[square][direction]``: the squares along one diagonal, nearest first.
 
-    Used by the flying kings of the Russian rules, which slide and capture at a
+    Used by the flying kings of JokerGame, which slide and capture at a
     distance instead of stepping one square at a time.
     """
     rays = []
@@ -311,15 +298,15 @@ class Move:
 
 
 class Board:
-    """A mutable 8x8 checkers position plus the side to move and the rules."""
+    """A mutable 8x8 checkers position plus the side to move and its rule set."""
 
-    __slots__ = ("cells", "turn", "rules", "_flying", "_backwards", "_longest", "_crown_continues")
+    __slots__ = ("cells", "turn", "rules", "_book")
 
     def __init__(
         self,
         cells: Optional[Sequence[int]] = None,
         turn: int = RED,
-        rules: str = "english",
+        rules: Union[str, Rules, None] = JOKERGAME,
     ) -> None:
         if cells is None:
             self.cells = _initial_cells()
@@ -329,41 +316,46 @@ class Board:
             self.cells = list(cells)
         if turn not in (RED, BLACK):
             raise ValueError("turn must be RED or BLACK")
-        if rules not in RULES:
-            raise ValueError(f"rules must be one of {', '.join(RULES)}")
+        # one shared configuration for the whole project (see checkersbot/rules.py)
+        self._book = resolve(rules)
         self.turn = turn
-        self.rules = rules
-        # the rule flags are asked millions of times during a search, so they are
-        # decided once here instead of comparing strings in every node
-        self._flying = rules in ("russian", "brazilian", "joker")
-        self._backwards = rules in ("brazilian", "joker")
-        self._longest = rules in ("brazilian", "joker")
-        self._crown_continues = rules == "joker"
+        self.rules = self._book.name
+
+    @property
+    def rulebook(self) -> Rules:
+        """The shared JokerGame rule configuration this board plays by."""
+        return self._book
+
+    @property
+    def removal(self) -> str:
+        """How captured pieces are removed - part of the rule set, not a choice."""
+        return self._book.removal
+
 
     @property
     def flying_kings(self) -> bool:
-        """True when kings slide and capture at a distance (Russian/Brazilian)."""
-        return self._flying
+        """Kings slide and capture at a distance (part of the JokerGame rule set)."""
+        return self._book.flying_kings
 
     @property
     def men_capture_backwards(self) -> bool:
-        """True when men may capture in all four directions (Brazilian rules)."""
-        return self._backwards
-
-    @property
-    def maximum_capture(self) -> bool:
-        """True when the longest capture sequence is compulsory (Brazilian rules)."""
-        return self._longest
+        """Men may capture in all four directions (JokerGame rules)."""
+        return self._book.men_capture_backwards
 
     @property
     def promotion_continues(self) -> bool:
-        """True when a man crowned *during* a capture keeps capturing (joker).
+        """A man crowned *during* a capture keeps capturing as a king.
 
-        jokergame.cc crowns the man on the promotion row in the middle of the
-        jump sequence and lets it carry on as a flying king, so one move can be
-        "man jumps, is crowned, the new king jumps again".
+        JokerGame crowns the man on the promotion row in the middle of the jump
+        sequence and lets it carry on, so one move can be "man jumps, is crowned,
+        the new king jumps again".
         """
-        return self._crown_continues
+        return self._book.promotion_continues
+
+    @property
+    def longest_capture_required(self) -> bool:
+        """False: any completed capture path may be played (user's observation)."""
+        return self._book.longest_capture_required
 
     # ------------------------------------------------------------------
     # construction helpers
@@ -375,7 +367,8 @@ class Board:
 
     @classmethod
     def from_matrix(
-        cls, matrix: Sequence[Sequence[int]], turn: int = RED, rules: str = "english"
+        cls, matrix: Sequence[Sequence[int]], turn: int = RED,
+        rules: Union[str, Rules, None] = JOKERGAME,
     ) -> "Board":
         """Build a board from an 8x8 nested sequence of piece values."""
         if len(matrix) != BOARD_SIZE:
@@ -389,7 +382,8 @@ class Board:
 
     @classmethod
     def from_rows(
-        cls, rows: Sequence[str], turn: int = RED, rules: str = "english"
+        cls, rows: Sequence[str], turn: int = RED,
+        rules: Union[str, Rules, None] = JOKERGAME,
     ) -> "Board":
         """Build a board from 8 strings such as ``" b b b b"`` / ``".r.r.r.r"``.
 
@@ -409,7 +403,7 @@ class Board:
         return cls(cells, turn, rules)
 
     def copy(self) -> "Board":
-        return Board(self.cells, self.turn, self.rules)
+        return Board(self.cells, self.turn, self._book)
 
     # ------------------------------------------------------------------
     # piece access
@@ -462,22 +456,124 @@ class Board:
             return captures
         return self.quiet_moves(player)
 
-    def capture_moves(self, player: Optional[int] = None) -> List[Move]:
-        """Every complete capture sequence, or ``[]`` when no jump is available."""
-        player = self.turn if player is None else player
+    def raw_capture_moves(self, player: Optional[int] = None) -> List[Move]:
+        """Deprecated alias of :meth:`capture_moves` (same list, no filter exists).
+
+        Kept so older call sites keep working; ``capture_moves`` is the name to use.
+        """
+        return self.capture_moves(player)
+
+    # -- the capture generator ---------------------------------------------
+    def _capture_paths(self, player: int) -> List[Move]:
+        """Every completed chain under the JokerGame rules.
+
+        Nothing here knows about particular squares: from the landing square the
+        captures are searched again on the *updated* board (a taken piece leaves at
+        once), so a flying king may land on any free square behind the piece it
+        took, pass over squares it has just cleared (its own start square included)
+        and carry on in any allowed diagonal - the opposite direction as well.  A
+        piece can never be taken twice, a path ends only when there is no
+        continuation left, and the number of pieces taken is never a filter.
+        """
         is_red = player > 0
-        cells = self.cells
+        work = list(self.cells)
         results: List[Move] = []
         for square in PLAYABLE_SQUARES:
-            piece = cells[square]
+            piece = work[square]
             if piece == 0 or (piece > 0) != is_red:
                 continue
-            self._collect_captures(square, piece, [], square, results)
-        if results and self.maximum_capture:
-            # Brazilian rules: the longest capture is compulsory
-            longest = max(move.captured_count for move in results)
-            results = [move for move in results if move.captured_count == longest]
+            work[square] = 0                # the mover is in the air for the whole chain
+            self._collect_captures(work, square, piece, square, (), (), results, False)
+            work[square] = piece
         return results
+
+    def _capture_jumps(self, cells: List[int], square: int, piece: int):
+        """``(victim, landing)`` pairs available from ``square`` right now."""
+        is_red = piece > 0
+        if piece == RED_MAN or piece == BLACK_MAN:
+            if self.men_capture_backwards:
+                jumps = KING_JUMPS[square]
+            elif piece == RED_MAN:
+                jumps = RED_JUMPS[square]
+            else:
+                jumps = BLACK_JUMPS[square]
+            for over, land in jumps:
+                victim = cells[over]
+                if victim == 0 or (victim > 0) == is_red:
+                    continue
+                if cells[land] != 0:
+                    continue                # the mover itself is lifted while it jumps
+                yield over, land
+            return
+        if not self.flying_kings:
+            for over, land in KING_JUMPS[square]:
+                victim = cells[over]
+                if victim == 0 or (victim > 0) == is_red:
+                    continue
+                if cells[land] != 0:
+                    continue
+                yield over, land
+            return
+        for ray in RAYS[square]:
+            victim_square = None
+            for index, cell in enumerate(ray):
+                if cells[cell] == 0:
+                    continue
+                if (cells[cell] > 0) == is_red:
+                    break                   # our own piece blocks the ray
+                victim_square = cell
+                position = index
+                break
+            if victim_square is None:
+                continue
+            for land in ray[position + 1:]:
+                if cells[land] != 0:
+                    break
+                yield victim_square, land
+
+    def _collect_captures(self, cells: List[int], square: int, piece: int,
+                           origin: int, captured: Tuple[int, ...],
+                           path: Tuple[int, ...], results: List[Move],
+                           promoted: bool) -> None:
+        """Extend one chain from ``square``; append it when nothing extends it.
+
+        The moving piece is not present in ``cells`` at all (see
+        :meth:`_capture_paths`), so every square it has left is free for
+        the rest of the chain - which is exactly the immediate-removal rule.
+        """
+        extended = False
+        crown_row = 0 if piece > 0 else BOARD_SIZE - 1
+        for victim, landing in list(self._capture_jumps(cells, square, piece)):
+            extended = True
+            victim_piece = cells[victim]
+            cells[victim] = 0               # removed at once
+            crowned = (piece == RED_MAN or piece == BLACK_MAN) and \
+                ROW_OF[landing] == crown_row
+            if crowned and not self.promotion_continues:
+                # the move ends on the crowning square
+                results.append(Move(origin, landing, captured + (victim,), True,
+                                    path + (landing,)))
+            else:
+                self._collect_captures(
+                    cells, landing, promote_piece(piece) if crowned else piece,
+                    origin, captured + (victim,), path + (landing,), results,
+                    promoted or crowned,
+                )
+            cells[victim] = victim_piece
+        if not extended and captured:
+            results.append(Move(origin, square, captured, promoted, path))
+
+
+    def capture_moves(self, player: Optional[int] = None) -> List[Move]:
+        """Every completed capture path, or ``[]`` when no jump is available.
+
+        The list is exactly what the generator produced: a path that ends only when
+        no continuation is left, with **no** filter on the number of pieces taken.
+        JokerGame does not require the longest capture (user's observation), so a
+        two-piece path is as legal as a three-piece one.
+        """
+        player = self.turn if player is None else player
+        return self._capture_paths(player)
 
     def quiet_moves(self, player: Optional[int] = None) -> List[Move]:
         """Non-capturing moves for ``player`` (ignoring the mandatory jump rule)."""
@@ -495,7 +591,7 @@ class Board:
             elif piece == BLACK_MAN:
                 steps, crown_row, man = BLACK_STEPS[square], BOARD_SIZE - 1, True
             elif flying:
-                # a Russian king slides along a diagonal until something blocks it
+                # a JokerGame king slides along a diagonal until something blocks it
                 for ray in RAYS[square]:
                     for target in ray:
                         if cells[target] != 0:
@@ -510,115 +606,6 @@ class Board:
                 promote = man and ROW_OF[target] == crown_row
                 moves.append(Move(square, target, (), promote))
         return moves
-
-    def _collect_captures(
-        self,
-        square: int,
-        piece: int,
-        captured: List[int],
-        origin: int,
-        results: List[Move],
-        path: Optional[List[int]] = None,
-        promoted: bool = False,
-    ) -> None:
-        """Depth-first enumeration of all maximal jump sequences for one piece.
-
-        ``promoted`` records that the piece was already crowned earlier in this
-        move (joker rules), so the final :class:`Move` still finishes as a king.
-        """
-        cells = self.cells
-        path = [] if path is None else path
-        if piece == RED_MAN:
-            jumps, crown_row, king, enemy_is_red = RED_JUMPS[square], 0, False, False
-        elif piece == BLACK_MAN:
-            jumps, crown_row, king, enemy_is_red = BLACK_JUMPS[square], BOARD_SIZE - 1, False, True
-        elif piece == RED_KING:
-            jumps, crown_row, king, enemy_is_red = KING_JUMPS[square], -1, True, False
-        else:
-            jumps, crown_row, king, enemy_is_red = KING_JUMPS[square], -1, True, True
-
-        if king and self.flying_kings:
-            self._collect_king_captures(square, captured, origin, results, path, promoted)
-            return
-
-        if not king and self.men_capture_backwards:
-            # Brazilian rules: a man may jump in every direction, but it only
-            # *moves* forwards and is crowned as soon as it lands on the far row
-            jumps = KING_JUMPS[square]
-
-        extended = False
-        for over, land in jumps:
-            victim = cells[over]
-            if victim == 0 or (victim > 0) != enemy_is_red:
-                continue
-            if over in captured:
-                # already jumped over in this sequence, it is gone from the board
-                continue
-            if cells[land] != 0 and land != origin:
-                continue
-            extended = True
-            captured.append(over)
-            path.append(land)
-            if not king and ROW_OF[land] == crown_row:
-                if self.promotion_continues:
-                    # crowned in the middle of the jump: the rest of the chain is
-                    # played by the new king (jokergame.cc), and the move ends as
-                    # a king, so remembered by ``promoted=True``
-                    self._collect_captures(
-                        land, promote_piece(piece), captured, origin, results, path, True
-                    )
-                else:
-                    results.append(Move(origin, land, captured, True, path))
-            else:
-                self._collect_captures(land, piece, captured, origin, results, path, promoted)
-            path.pop()
-            captured.pop()
-
-        if not extended and captured:
-            results.append(Move(origin, square, captured, promoted, path))
-
-    def _collect_king_captures(
-        self,
-        square: int,
-        captured: List[int],
-        origin: int,
-        results: List[Move],
-        path: List[int],
-        promoted: bool = False,
-    ) -> None:
-        """Flying-king captures: take from any distance and land anywhere behind.
-
-        Captured pieces stay on the board until the move ends, so the king may
-        neither jump the same piece twice nor pass over a piece it already took.
-        ``promoted`` marks a king that was crowned earlier in this same move.
-        """
-        cells = self.cells
-        enemy_is_red = cells[origin] < 0
-        extended = False
-        for ray in RAYS[square]:
-            for position, victim_square in enumerate(ray):
-                # our own starting square is empty during the move, exactly like
-                # in the man generator - a king may pass over it and land on it
-                victim = 0 if victim_square == origin else cells[victim_square]
-                if victim == 0:
-                    continue
-                if (victim > 0) != enemy_is_red or victim_square in captured:
-                    break                      # our own piece or an already taken one
-                for land in ray[position + 1:]:
-                    if cells[land] != 0 and land != origin:
-                        break                  # a captured piece still blocks the ray
-                    extended = True
-                    captured.append(victim_square)
-                    path.append(land)
-                    self._collect_king_captures(
-                        land, captured, origin, results, path, promoted
-                    )
-                    path.pop()
-                    captured.pop()
-                break
-
-        if not extended and captured:
-            results.append(Move(origin, square, captured, promoted, path))
 
     # ------------------------------------------------------------------
     # applying moves

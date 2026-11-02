@@ -38,7 +38,8 @@ from checkersbot.site import (
     LOBBY_STEP_JS,
     LOBBY_URL,
     READ_STATE_JS,
-    REMATCH_JS,
+    ACCEPT_REMATCH_JS,
+    REMATCH_OFFER_JS,
     SEARCH_STATUS_JS,
     SELECTORS,
     SiteError,
@@ -233,9 +234,14 @@ class WebViewSite:
         self.log(f"lobby: {result}")
         return True
 
-    def request_rematch(self) -> str:
-        """Ask for a rematch through the site's own client API."""
-        return str(self._eval(f"JSON.stringify({REMATCH_JS})") or "none")
+    def rematch_offer(self) -> Dict[str, object]:
+        """Has the opponent offered a rematch?  (We never ask for one ourselves.)"""
+        data = self._eval(f"JSON.stringify({REMATCH_OFFER_JS})")
+        return data if isinstance(data, dict) else {}
+
+    def accept_rematch(self) -> str:
+        """Accept the opponent's rematch offer (the banner's own button)."""
+        return str(self._eval(f"JSON.stringify({ACCEPT_REMATCH_JS})") or "none")
 
     def accept_coin_offer(self) -> str:
         """Press the site's own accept button in the bigger-stake dialog."""
