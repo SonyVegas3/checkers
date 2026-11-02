@@ -276,35 +276,40 @@ screen brightness down or let the bot run on the PC instead.
 1. Open the app and sign in on jokergame.cc inside it (the WebView keeps the
    cookies; the app never stores a password). You do **not** have to open a
    table: the bot walks the lobby itself.
-2. **The screen is the game.** The JokerGame WebView fills the whole window and,
-   crucially, **keeps its size** when the panel opens: on iOS the WebView is
-   *pinned to the window* with four Auto Layout constraints
-   (`src/checkersbot_ios/overlay.py`), so it is no longer part of the Toga layout
-   at all and the sheet floats **over** it instead of pushing it around.
+2. **The screen is the game.** The JokerGame WebView fills the window; the
+   controls live in a collapsible bottom sheet that is only a 44 pt bar while it
+   is closed, so the board is never covered and never scaled:
 
    ```
    ┌────────────────────────────────────────┐
    │                                        │
-   │        JokerGame (constant size)       │
+   │        JokerGame (full screen)         │
    │                                        │
    ├────────────────────────────────────────┤
-   │  ⚙   ● მუშაობს              ▶    📜   │  ← floating bar (44 pt, overlays)
+   │  ⚙   ● მუშაობს              ▶    📜   │  ← the bar (44 pt)
    └────────────────────────────────────────┘
    ```
 
-   The log tells you it worked on your device:
+   **Native overlay is off by default.**  Build `ios-28` pinned the WebView to the
+   window with Auto Layout constraints (`src/checkersbot_ios/overlay.py`) and on a
+   real iPhone it left only the upper part of the game visible with the controls
+   hidden, so the app ships the last known-good layout again:
+   `OVERLAY_ENABLED = False` in `src/checkersbot_ios/app.py`.  The sheet is a
+   layout sibling again, i.e. opening it shrinks the visible game (never reloads
+   or zooms it).  The pin code stays behind that flag for a future attempt, and
+   the app now logs the real UIKit hierarchy so the next change can be based on
+   measurements instead of guesses:
 
    ```
-   overlay: the webview is pinned to the window, the panel floats above it
-   overlay: webview 390x844 @ 0,0 | window 390x844
-   ...
-   overlay: თამაშის ზომა უცვლელია (webview 390x844 @ 0,0 | window 390x844)
+   overlay: diagnostics (page loaded)
+   overlay: sheet display=pack body=none log=none
+   overlay: pinned=False
+   UIWindow frame=390x844@0,0 bounds=390x844 clip=False hidden=False alpha=1.00
+     TogaContainerView frame=390x844@0,0 ...
+       UIView frame=390x844@0,0 ... subs=2
+         UIView frame=390x752@0,0 ...        ← stage (WebView inside)
+         UIView frame=390x44@0,752 ...        ← the bar / sheet
    ```
-
-   That last line is printed on **every** open/close, so a regression shows up
-   immediately as “თამაშის ზომა შეიცვალა”. If the pin is impossible (an unknown
-   Toga version), the log says so and the panel falls back to the plain layout —
-   the app never breaks for this.
 
    * **⚙** opens the settings sheet (groups: 🎚 ძრავა, 🎮 თამაში, 🧠 ქცევა,
      🔍 დიაგნოსტიკა) and turns into **▾** to close it again;
@@ -314,9 +319,9 @@ screen brightness down or let the bot run on the PC instead.
    * **📜** shows/hides the log viewer (it also opens with the sheet closed).
 
    Opening or closing the sheet only hides and shows widgets of the sheet; the
-   WebView is never re-created, reloaded, zoomed **or resized** — it stays pinned
-   to the window, and only the visible part changes (the sheet covers the bottom
-   of the game while it is open). Only **⟲ ლობი** reloads the page.
+   WebView is never re-created, reloaded or zoomed — in layout mode it is
+   re-laid-out (which is what shrinks it) and the page simply reflows. Only
+   **⟲ ლობი** reloads the page.
 3. The sheet holds every setting the bot has — **სიძლიერე (სიღრმე)**,
    **წამი/სვლა**, **რბილი ლიმიტი**, **poll**, **მაქს. თამაში / მაქს. სვლა**,
    **რემატჩის / ჩატის ლოდინი**, **ფსონი**, and the switches

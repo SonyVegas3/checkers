@@ -52,8 +52,15 @@ STAKE = 0            # lobby stake: 0 = 50 coins (the cheapest table)
 #: The collapsible sheet: the game keeps the whole screen, the controls only take
 #: the height of the bar while they are closed.
 SHEET_BAR_H = 44      # the compact floating bar (no layout space is reserved)
-SHEET_BODY_H = 360
+SHEET_BODY_H = 300
 LOG_VIEW_H = 120
+
+#: The native overlay (WebView pinned to the window) is **off**: build ios-28
+#: shipped it on and left a real iPhone with a half-drawn game, so the app now
+#: uses the last known-good layout (WebView in the Toga layout, sheet below) and
+#: the pin only runs when this flag is switched on *and* the device log has been
+#: checked with ``overlay: diagnostics`` (see ``_log_diagnostics``).
+OVERLAY_ENABLED = False
 
 #: Every setting the panel owns, with its default.  ``CheckersBot`` is built from
 #: this dict, and :func:`push_live_settings` copies it into a *running* bot.
@@ -239,6 +246,7 @@ class CheckersBotApp(toga.App):
         self.log_line("აპი გაშვებულია — გახსენი მაგიდა, დააჭირე ▶-ს, ⚙ = პარამეტრები")
         try:                       # the native views exist only after the window
             self.loop.call_later(1.5, self._install_overlay)
+            self.loop.call_later(2.5, self._log_diagnostics, "startup")
         except Exception:
             pass
         return root
@@ -308,20 +316,25 @@ class CheckersBotApp(toga.App):
 
     # -- native overlay (the game must keep its size) --------------------
     def _install_overlay(self, force: bool = False) -> bool:
-        """Pin the WebView to the window so the sheet floats above it.
+        """Pin the WebView to the window - **only** when ``OVERLAY_ENABLED``.
 
-        Without this the sheet is a *layout* sibling of the WebView and opening it
-        would shrink the game.  Toga's iOS layout is Auto Layout, so the pin is
-        four constraint swaps (see :mod:`checkersbot_ios.overlay`) - the
-        ``WKWebView`` is never re-created, so the game keeps its page and its
-        exact size.  Returns True when the overlay is active.
+        ios-28 shipped this on and broke the screen on a real iPhone (only the
+        upper part of the game visible, controls hidden), so it is off by default:
+        the app uses the known-good layout instead.  When the flag is on, the pin
+        is four Auto Layout swaps (see :mod:`checkersbot_ios.overlay`) and every
+        failure falls back to the layout - the app must never stay broken.
         """
         if self._overlay_constraints and not force:
             return True
         created = overlay.install(
-            self.webview._impl, self.sheet._impl, log=self.log_line
+            self.webview._impl, self.sheet._impl, log=self.log_line,
+            enabled=bool(OVERLAY_ENABLED),
         ) or []
         self._overlay_constraints = created
+        if not created and not getattr(self, "_overlay_reported", False):
+            self._overlay_reported = True
+            self.log_line("overlay: off - the panel uses the layout (game shrinks "
+                          "while the sheet is open)")
         return bool(created)
 
     def _frame_report(self) -> str:
@@ -329,6 +342,27 @@ class CheckersBotApp(toga.App):
         if not self._overlay_constraints:
             return "layout mode"
         return overlay.describe_pin(self.webview._impl)
+
+    def _log_diagnostics(self, why: str) -> None:
+        """Dump the real UIKit hierarchy: sizes, clipping, z-order, visibility."""
+        if sys.platform != "ios":
+            return
+        try:
+            native = self.webview._impl.native
+            try:                                  # the window shows *everything*
+                top = native.window() or overlay.top_ancestor(native)
+            except Exception:
+                top = overlay.top_ancestor(native)
+            lines = [f"overlay: diagnostics ({why})",
+                     f"overlay: sheet display={self.sheet.style.display} "
+                     f"body={self.body.style.display} "
+                     f"log={self.log_view.style.display}",
+                     f"overlay: pinned={bool(self._overlay_constraints)}"]
+            lines += overlay.diagnostics(top, max_depth=5)
+            for line in lines:
+                self.log_line(line)
+        except Exception as error:               # diagnostics must never break it
+            self.log_line(f"! overlay: diagnostics failed: {error}")
 
     # -- control handlers ------------------------------------------------
     def _make_slider_handler(self, key: str, value_label: Any):
@@ -380,6 +414,9 @@ class CheckersBotApp(toga.App):
             self.log_line(f"! overlay: თამაშის ზომა შეიცვალა ({before} -> {after})")
         else:
             self.log_line(f"overlay: თამაშის ზომა უცვლელია ({after})")
+        # one hierarchy dump per toggle, so a wrong layout can be diagnosed from
+        # the log instead of guessed (see _log_diagnostics)
+        self._log_diagnostics("sheet " + ("open" if opening else "closed"))
 
     def on_toggle_log(self, widget=None, **kwargs) -> None:
         """Show/hide the log viewer (works with the settings sheet closed too)."""
@@ -584,8 +621,9 @@ class CheckersBotApp(toga.App):
     def on_webview_load(self, widget, **kwargs) -> None:
         self._capture_loop()
         self.log_line("გვერდი ჩაიტვირთა")
-        # the native views exist by now: pin the game so the sheet can float
+        # the native views exist by now: try the pin and dump the real hierarchy
         self._install_overlay()
+        self._log_diagnostics("page loaded")
         try:
             asyncio.ensure_future(self._report_title())
         except RuntimeError:

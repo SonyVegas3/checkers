@@ -73,7 +73,32 @@ def host_view(widget_impl: Any) -> Optional[Any]:
     return native.superview() if native is not None else None
 
 
-def pin_to_window(widget_impl: Any, layouts: Any = None) -> List[Any]:
+def anchor_view(view: Any) -> Any:
+    """The view the pin should be attached to.
+
+    Preferring the **root view controller's view** (a real layout container) over
+    the raw ``UIWindow``: Auto Layout is much happier with a normal ``UIView`` as
+    the common ancestor, and that view already has the window's bounds minus the
+    parts UIKit manages.
+    """
+    try:
+        window = view.window()
+    except Exception:
+        window = None
+    if window is not None:
+        try:
+            controller = window.rootViewController()
+            if controller is not None:
+                root = controller.view()
+                if root is not None:
+                    return root
+        except Exception:
+            pass
+    return top_ancestor(view)
+
+
+def pin_to_window(widget_impl: Any, layouts: Any = None,
+                  anchor: Any = None) -> List[Any]:
     """Make the widget cover the whole window, independent of the Toga layout.
 
     Returns the constraints that were created (an empty list when the widget
@@ -84,7 +109,7 @@ def pin_to_window(widget_impl: Any, layouts: Any = None) -> List[Any]:
     if native is None:
         return []
     host = host_view(widget_impl)
-    root = top_ancestor(native)
+    root = anchor if anchor is not None else anchor_view(native)
     if root is None or root is native or host is None:
         return []
     try:
@@ -170,21 +195,74 @@ def describe_pin(widget_impl: Any) -> str:
         return f"(cannot read the native frames: {error})"
 
 
+def describe_view(view: Any, depth: int = 0) -> List[str]:
+    """One line per view: class, frame, bounds, clipping, hidden, alpha, insets."""
+    lines: List[str] = []
+    try:
+        frame = view.frame()
+        bounds = view.bounds()
+        name = type(view).__name__
+        try:
+            name = str(view.objc_class.name)
+        except Exception:
+            pass
+        lines.append(
+            "  " * depth + f"{name} frame={frame.size.width:.0f}x{frame.size.height:.0f}"
+            f"@{frame.origin.x:.0f},{frame.origin.y:.0f}"
+            f" bounds={bounds.size.width:.0f}x{bounds.size.height:.0f}"
+            f" clip={bool(view.clipsToBounds)}"
+            f" hidden={bool(view.isHidden())}"
+            f" alpha={float(view.alpha()):.2f}"
+            f" opaque={bool(view.isOpaque())}"
+            f" subs={len(view.subviews())}"
+        )
+    except Exception as error:
+        lines.append("  " * depth + f"(unreadable view: {error})")
+    return lines
+
+
+def diagnostics(view: Any, max_depth: int = 6, max_children: int = 6) -> List[str]:
+    """Dump the native view hierarchy - the only way to see what UIKit really did.
+
+    Every line has the class, frame, bounds, clipping flag, hidden/alpha state and
+    the number of subviews, so a wrong size, a covering view, a clipping parent or
+    an invisible overlay can be told apart instead of guessed.
+    """
+    lines: List[str] = []
+    stack = [(view, 0)]
+    while stack:
+        current, depth = stack.pop()
+        lines.extend(describe_view(current, depth))
+        if depth >= max_depth or current is None:
+            continue
+        try:
+            children = list(current.subviews())
+        except Exception:
+            continue
+        # deepest child last, so the output reads top-down like the screen
+        for child in reversed(children[-max_children:]):
+            stack.append((child, depth + 1))
+    return lines
+
+
 def install(webview_impl: Any, sheet_impl: Any = None, *,
             platform: Optional[str] = None, log: Any = None,
-            pin: Any = None, front: Any = None) -> List[Any]:
+            pin: Any = None, front: Any = None,
+            enabled: Optional[bool] = None) -> List[Any]:
     """Pin the game and put the sheet in front of it; returns the constraints.
 
-    This is the whole policy of the overlay in one testable place: it only runs on
-    iOS, it never raises, it says exactly what happened in the log, and it returns
-    an empty list when the pin is impossible (the caller then keeps the plain
-    layout).  ``pin``/``front``/``platform``/``log`` are injectable for tests.
+    This is the whole policy of the overlay in one testable place: it only runs
+    when it is enabled *and* the platform is iOS, it never raises, it says exactly
+    what happened in the log, and it returns an empty list when the pin is
+    impossible (the caller then keeps the plain layout).  ``pin``/``front``/
+    ``platform``/``log``/``enabled`` are injectable for tests.
     """
     platform = sys.platform if platform is None else platform
+    enabled = (platform == "ios") if enabled is None else bool(enabled)
     log = log if log is not None else (lambda text: None)
     pin = pin or pin_to_window
     front = front or bring_to_front
-    if platform != "ios":
+    if not enabled or platform != "ios":
         return []
     try:
         created = pin(webview_impl)
@@ -209,6 +287,9 @@ __all__ = [
     "release_pin",
     "bring_to_front",
     "describe_pin",
+    "describe_view",
+    "diagnostics",
+    "anchor_view",
     "top_ancestor",
     "host_view",
 ]

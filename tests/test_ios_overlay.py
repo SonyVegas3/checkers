@@ -43,15 +43,23 @@ class OldConstraint(FakeConstraint):
 
 
 class FakeView:
-    def __init__(self, name: str, parent=None) -> None:
+    def __init__(self, name: str, parent=None, children=None) -> None:
         self.name = name
         self.parent = parent
         self.constraints: list = []
         self.front = None
         self.translatesAutoresizingMaskIntoConstraints = True
+        self.clipsToBounds = False
+        self.children: list = list(children or [])
+        self.translates = True
+        # UIKit exposes the class through ``objc_class.name``; the fake mirrors it
+        self.objc_class = types.SimpleNamespace(name=name)
 
     def superview(self):
         return self.parent
+
+    def subviews(self):
+        return self.children
 
     def addConstraint(self, constraint) -> None:
         self.constraints.append(constraint)
@@ -68,6 +76,18 @@ class FakeView:
             size=types.SimpleNamespace(width=390, height=844),
             origin=types.SimpleNamespace(x=0, y=0),
         )
+
+    def bounds(self):
+        return self.frame()
+
+    def isHidden(self):
+        return False
+
+    def alpha(self):
+        return 1.0
+
+    def isOpaque(self):
+        return True
 
 
 def _tree():
@@ -172,6 +192,16 @@ class InstallPolicyTests(unittest.TestCase):
         self.assertEqual(created, [])
         self.assertEqual(called, [])            # the pin is never even attempted
 
+    def test_it_does_nothing_when_the_flag_is_off(self):
+        # ios-28 shipped the pin on and broke the screen: it must stay opt-in
+        called: list = []
+        created = overlay.install(
+            types.SimpleNamespace(native=None), platform="ios", enabled=False,
+            pin=lambda impl: called.append(1) or [object()],
+        )
+        self.assertEqual(created, [])
+        self.assertEqual(called, [])
+
     def test_it_pins_and_brings_the_sheet_to_front(self):
         lines: list = []
         front: list = []
@@ -209,6 +239,52 @@ class InstallPolicyTests(unittest.TestCase):
         )
         self.assertEqual(created, [])
         self.assertTrue(any("could not be pinned" in line for line in lines))
+
+
+class DiagnosticsTests(unittest.TestCase):
+    """The hierarchy dump must say size / clipping / visibility for every view."""
+
+    def _tree(self):
+        webview = FakeView("WKWebView")
+        stage = FakeView("stage", children=[webview])
+        stage.clipsToBounds = True
+        sheet = FakeView("sheet")
+        root = FakeView("root", children=[stage, sheet])
+        window = FakeView("UIWindow", children=[root])
+        for child in (root, stage, sheet, webview):
+            child.window = lambda: window
+        return window, root, stage, sheet, webview
+
+    def test_it_reports_frames_clipping_and_visibility(self):
+        window, root, stage, sheet, webview = self._tree()
+        lines = overlay.diagnostics(window, max_depth=4)
+        text = "\n".join(lines)
+        self.assertIn("UIWindow", text)
+        self.assertIn("frame=390x844", text)
+        self.assertIn("clip=True", text)             # the stage clips its child
+        self.assertIn("hidden=False", text)
+        self.assertIn("alpha=1.00", text)
+        self.assertIn("subs=2", text)                # root has stage + sheet
+
+    def test_an_unreadable_view_does_not_raise(self):
+        broken = types.SimpleNamespace()
+        lines = overlay.diagnostics(broken, max_depth=1)
+        self.assertTrue(lines)
+        self.assertIn("unreadable", "\n".join(lines))
+
+    def test_the_deepest_views_are_included(self):
+        window, root, stage, sheet, webview = self._tree()
+        lines = overlay.diagnostics(window, max_depth=4)
+        self.assertIn("WKWebView", "\n".join(lines))
+
+
+class ShippedDefaultTests(unittest.TestCase):
+    """The risky native pin must not ship enabled without device proof."""
+
+    def test_the_overlay_is_off_by_default_in_the_app(self):
+        source = (ROOT / "src" / "checkersbot_ios" / "app.py").read_text(encoding="utf-8")
+        self.assertIn("OVERLAY_ENABLED = False", source)
+        self.assertIn("enabled=bool(OVERLAY_ENABLED)", source)
 
 
 if __name__ == "__main__":
