@@ -34,6 +34,7 @@ from toga.style.pack import COLUMN, ROW
 from checkersbot.bot import CheckersBot
 from checkersbot.site import SiteError
 
+from . import overlay
 from .site import WebViewSite
 
 DEFAULT_URL = "https://jokergame.cc/checkers"
@@ -50,7 +51,7 @@ STAKE = 0            # lobby stake: 0 = 50 coins (the cheapest table)
 
 #: The collapsible sheet: the game keeps the whole screen, the controls only take
 #: the height of the bar while they are closed.
-SHEET_BAR_H = 50
+SHEET_BAR_H = 44      # the compact floating bar (no layout space is reserved)
 SHEET_BODY_H = 360
 LOG_VIEW_H = 120
 
@@ -198,6 +199,8 @@ class CheckersBotApp(toga.App):
         #: log lines waiting for the next (throttled) log-view redraw
         self._pending_log: list = []
         self._log_refresh_at = None
+        #: constraints created by the native overlay pin (empty = layout mode)
+        self._overlay_constraints: list = []
 
     # -- window content -------------------------------------------------
     def build_content(self, app, **kwargs) -> Any:
@@ -234,6 +237,10 @@ class CheckersBotApp(toga.App):
             children=[self.stage, self.sheet],
         )
         self.log_line("აპი გაშვებულია — გახსენი მაგიდა, დააჭირე ▶-ს, ⚙ = პარამეტრები")
+        try:                       # the native views exist only after the window
+            self.loop.call_later(1.5, self._install_overlay)
+        except Exception:
+            pass
         return root
 
     # -- building blocks -------------------------------------------------
@@ -260,11 +267,12 @@ class CheckersBotApp(toga.App):
             "▶", on_press=self.on_start, style=Pack(width=52, margin=0)
         )
         self.log_button = toga.Button(
-            "📜", on_press=self.on_toggle_log, style=Pack(width=52, margin=0)
+            "📜", on_press=self.on_toggle_log,
+            style=Pack(width=52, margin=0, display="none"),
         )
         self.bar = toga.Box(
             style=Pack(direction=ROW, height=SHEET_BAR_H, background_color="#111a22",
-                       margin=(4, 6, 4, 6)),
+                       margin=(0, 6, 6, 6)),
             children=[self.sheet_button, self.status, self.start_button, self.log_button],
         )
 
@@ -297,6 +305,30 @@ class CheckersBotApp(toga.App):
             "value": {"font_size": 12, "color": "#7fd1ff", "font_weight": "bold",
                       "margin": (0, 0, 0, 6)},
         }
+
+    # -- native overlay (the game must keep its size) --------------------
+    def _install_overlay(self, force: bool = False) -> bool:
+        """Pin the WebView to the window so the sheet floats above it.
+
+        Without this the sheet is a *layout* sibling of the WebView and opening it
+        would shrink the game.  Toga's iOS layout is Auto Layout, so the pin is
+        four constraint swaps (see :mod:`checkersbot_ios.overlay`) - the
+        ``WKWebView`` is never re-created, so the game keeps its page and its
+        exact size.  Returns True when the overlay is active.
+        """
+        if self._overlay_constraints and not force:
+            return True
+        created = overlay.install(
+            self.webview._impl, self.sheet._impl, log=self.log_line
+        ) or []
+        self._overlay_constraints = created
+        return bool(created)
+
+    def _frame_report(self) -> str:
+        """WebView vs window size - logged around every open/close."""
+        if not self._overlay_constraints:
+            return "layout mode"
+        return overlay.describe_pin(self.webview._impl)
 
     # -- control handlers ------------------------------------------------
     def _make_slider_handler(self, key: str, value_label: Any):
@@ -332,14 +364,22 @@ class CheckersBotApp(toga.App):
 
     # -- sheet / log toggles ---------------------------------------------
     def on_toggle_sheet(self, widget=None, **kwargs) -> None:
-        """Open/close the settings body - the WebView keeps its page."""
+        """Open/close the settings body - the WebView is never touched."""
+        self._install_overlay()                  # pin on the first use, if needed
+        before = self._frame_report()
         opening = self.body.style.display == "none"
         self.body.style.display = "pack" if opening else "none"
         self.actions.style.display = "pack" if opening else "none"
+        self.log_button.style.display = "pack" if opening else "none"
         self.sheet_button.text = "▾" if opening else "⚙"
         if opening:
             self._show_hint("")
         self.log_line("⚙ პარამეტრები " + ("გაიხსნა" if opening else "დაიხურა"))
+        after = self._frame_report()
+        if before != after:
+            self.log_line(f"! overlay: თამაშის ზომა შეიცვალა ({before} -> {after})")
+        else:
+            self.log_line(f"overlay: თამაშის ზომა უცვლელია ({after})")
 
     def on_toggle_log(self, widget=None, **kwargs) -> None:
         """Show/hide the log viewer (works with the settings sheet closed too)."""
@@ -544,6 +584,8 @@ class CheckersBotApp(toga.App):
     def on_webview_load(self, widget, **kwargs) -> None:
         self._capture_loop()
         self.log_line("გვერდი ჩაიტვირთა")
+        # the native views exist by now: pin the game so the sheet can float
+        self._install_overlay()
         try:
             asyncio.ensure_future(self._report_title())
         except RuntimeError:

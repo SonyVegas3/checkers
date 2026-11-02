@@ -276,19 +276,35 @@ screen brightness down or let the bot run on the PC instead.
 1. Open the app and sign in on jokergame.cc inside it (the WebView keeps the
    cookies; the app never stores a password). You do **not** have to open a
    table: the bot walks the lobby itself.
-2. **The screen is the game.** The JokerGame WebView fills the whole window; the
-   controls live in a collapsible **bottom sheet** that is only a 50 pt bar while
-   it is closed, so the board is never covered and never scaled:
+2. **The screen is the game.** The JokerGame WebView fills the whole window and,
+   crucially, **keeps its size** when the panel opens: on iOS the WebView is
+   *pinned to the window* with four Auto Layout constraints
+   (`src/checkersbot_ios/overlay.py`), so it is no longer part of the Toga layout
+   at all and the sheet floats **over** it instead of pushing it around.
 
    ```
    ┌────────────────────────────────────────┐
    │                                        │
-   │        JokerGame (full screen)         │
+   │        JokerGame (constant size)       │
    │                                        │
    ├────────────────────────────────────────┤
-   │  ⚙   ● მუშაობს              ▶    📜   │  ← the bar (50 pt)
+   │  ⚙   ● მუშაობს              ▶    📜   │  ← floating bar (44 pt, overlays)
    └────────────────────────────────────────┘
    ```
+
+   The log tells you it worked on your device:
+
+   ```
+   overlay: the webview is pinned to the window, the panel floats above it
+   overlay: webview 390x844 @ 0,0 | window 390x844
+   ...
+   overlay: თამაშის ზომა უცვლელია (webview 390x844 @ 0,0 | window 390x844)
+   ```
+
+   That last line is printed on **every** open/close, so a regression shows up
+   immediately as “თამაშის ზომა შეიცვალა”. If the pin is impossible (an unknown
+   Toga version), the log says so and the panel falls back to the plain layout —
+   the app never breaks for this.
 
    * **⚙** opens the settings sheet (groups: 🎚 ძრავა, 🎮 თამაში, 🧠 ქცევა,
      🔍 დიაგნოსტიკა) and turns into **▾** to close it again;
@@ -297,9 +313,10 @@ screen brightness down or let the bot run on the PC instead.
    * **▶ / ■** starts and stops the bot;
    * **📜** shows/hides the log viewer (it also opens with the sheet closed).
 
-   Opening or closing the sheet only hides and shows widgets of the sheet: the
-   WebView is never re-created, reloaded or zoomed, so the game simply gets its
-   space back. Only **⟲ ლობი** reloads the page.
+   Opening or closing the sheet only hides and shows widgets of the sheet; the
+   WebView is never re-created, reloaded, zoomed **or resized** — it stays pinned
+   to the window, and only the visible part changes (the sheet covers the bottom
+   of the game while it is open). Only **⟲ ლობი** reloads the page.
 3. The sheet holds every setting the bot has — **სიძლიერე (სიღრმე)**,
    **წამი/სვლა**, **რბილი ლიმიტი**, **poll**, **მაქს. თამაში / მაქს. სვლა**,
    **რემატჩის / ჩატის ლოდინი**, **ფსონი**, and the switches

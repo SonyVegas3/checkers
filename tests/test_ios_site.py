@@ -10,6 +10,7 @@ testable on a Windows machine without a Mac.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 import unittest
@@ -308,6 +309,8 @@ class IosSheetSettingsTests(unittest.TestCase):
         self.assertEqual(ios_app.state_from_log("our move: c3-d4"), "running")
         self.assertIsNone(ios_app.state_from_log("ლოგის ხაზი"))
 
+    @unittest.skipUnless(os.environ.get("CHECKERSBOT_UI_TESTS") == "1",
+                         "set CHECKERSBOT_UI_TESTS=1 to build the real Toga UI")
     def test_the_game_widget_survives_the_sheet(self):
         """Opening/closing the sheet must never re-create or resize the WebView."""
         try:
