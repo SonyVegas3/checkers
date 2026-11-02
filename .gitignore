@@ -46,6 +46,9 @@ Thumbs.db
 backgammon/
 DominoBot/
 
+# scratch: downloaded wheels used to inspect Toga's iOS backend
+tmp_toga/
+
 # local backups / scratch output
 .backup/
 backgammon/risk_acceptance.json
