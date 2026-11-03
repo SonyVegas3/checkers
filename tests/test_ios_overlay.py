@@ -307,16 +307,16 @@ class DiagnosticsTests(unittest.TestCase):
 
 
 class ShippedDefaultTests(unittest.TestCase):
-    """The WebView pin stays off; the panel pin ships with a rollback guard."""
+    """The app no longer does any native layout surgery - it has two pages."""
 
-    def test_the_webview_pin_is_never_used(self):
+    def test_no_native_constraint_surgery_is_used(self):
         source = (ROOT / "src" / "checkersbot_ios" / "app.py").read_text(encoding="utf-8")
-        # ios-28 pinned the WebView and broke the screen: that path stays off
-        self.assertIn("WEBVIEW_PIN_ENABLED = False", source)
-        self.assertIn("PANEL_OVERLAY_ENABLED = True", source)
-        # the panel pin must be verified and rolled back, never trusted blindly
-        self.assertIn("_verify_panel", source)
-        self.assertIn("_release_panel", source)
+        # the floating panel is gone: nothing in the app pins or reparents views
+        for gone in ("pin_panel(", "pin_to_window(", "restore_panel("):
+            self.assertNotIn(gone, source)
+        for gone in ("_install_overlay", "_panel_state", "_sync_panel_height",
+                     "WEBVIEW_PIN_ENABLED", "PANEL_OVERLAY_ENABLED", "on_toggle_sheet"):
+            self.assertNotIn(gone, source)
 
 
 class PanelTests(unittest.TestCase):
@@ -617,51 +617,51 @@ class AlertTests(unittest.TestCase):
         self.assertFalse(overlay.show_alert(None, "t", "m"))
 
 
-class SettingsButtonSourceTests(unittest.TestCase):
-    """Source-level checks for the ⚙ wiring (``app.py`` needs Toga to import)."""
+class TwoPageSourceTests(unittest.TestCase):
+    """Source-level checks for the two-page navigation (``app.py`` needs Toga)."""
 
     @classmethod
     def setUpClass(cls):
         cls.source = (ROOT / "src" / "checkersbot_ios" / "app.py").read_text(
             encoding="utf-8")
 
-    def test_the_sheet_is_never_stuck_at_the_bar_height(self):
-        # ios-31 set the style height to the 44 pt bar *before* pinning and kept it
-        # when the pin failed -> the body was laid out outside a 44 pt box and ⚙
-        # looked dead.  The failure paths must restore an auto height.
-        self.assertNotIn("self.sheet.style.height = SHEET_BAR_H", self.source)
-        self.assertIn("self.sheet.style.height = self._panel_height()", self.source)
-        failures = self.source.count("self._restore_layout_sheet()")
-        self.assertGreaterEqual(failures, 4, "every pin failure must restore the sheet")
+    def test_one_webview_and_two_pages(self):
+        self.assertEqual(self.source.count("toga.WebView("), 1,
+                         "exactly one WebView instance may exist")
+        for name in ("self.game_page", "self.settings_page", "self.tabbar",
+                     "self.tab_game", "self.tab_settings"):
+            self.assertIn(name, self.source)
 
-    def test_the_button_callback_is_wired_and_guarded(self):
-        self.assertIn("on_press=self.on_toggle_sheet", self.source)
-        self.assertIn("def _toggle_sheet(self)", self.source)
-        # an exception must never leave the settings unreachable
-        self.assertIn('self.body.style.display = "pack"  # that always works',
+    def test_page_switch_only_flips_display(self):
+        self.assertIn("def _show_page(self, name: str)", self.source)
+        self.assertIn('self.game_page.style.display = "pack" if game else "none"',
                       self.source)
-
-    def test_opening_is_verified_and_can_fall_back(self):
-        self.assertIn("self.loop.call_later(0.7, self._verify_open)", self.source)
-        self.assertIn("overlay.body_visible(self.body._impl, self.sheet._impl)",
+        self.assertIn('self.settings_page.style.display = "none" if game else "pack"',
                       self.source)
-        self.assertIn("falling back to the layout sheet", self.source)
+        # the handlers the tab buttons call
+        self.assertIn('on_press=self.on_show_game', self.source)
+        self.assertIn('on_press=self.on_show_settings', self.source)
 
-    def test_the_stage_height_is_frozen_and_released(self):
-        self.assertIn("def _freeze_stage(self)", self.source)
-        self.assertIn("self.stage.style.height = int(round(height))", self.source)
-        self.assertIn("def _unfreeze_stage(self)", self.source)
-        self.assertIn("self.stage.style.flex = 1", self.source)
+    def test_nothing_reloads_the_page_on_a_switch(self):
+        # ``load_url`` may only appear in the explicit ⟲ lobby handler
+        self.assertEqual(self.source.count("load_url"), 1)
+        self.assertIn("async def on_reload", self.source)
 
-    def test_diagnostics_are_reachable_without_the_panel(self):
+    def test_the_settings_page_has_everything(self):
+        for name in ("self.settings_status", "self.settings_start",
+                     "self.refresh_button", "self.reset_button",
+                     "self.log_button", "self.info_button",
+                     "self._scroll_container", "self.log_view"):
+            self.assertIn(name, self.source)
+        self.assertIn("horizontal=False", self.source)   # vertical scrolling only
+
+    def test_diagnostics_stay_reachable(self):
         self.assertIn('"ⓘ", on_press=self.on_show_diagnostics', self.source)
-        self.assertIn("def on_show_diagnostics(self", self.source)
         self.assertIn("overlay.show_alert(", self.source)
+        self.assertIn("webview page loads:", self.source)
 
-    def test_tap_steps_are_logged(self):
-        for marker in ("⚙ დაჭერილია (on_toggle_sheet)",
-                       "overlay: tap: body was",
-                       "overlay: open check:"):
+    def test_the_switch_is_logged(self):
+        for marker in ("გვერდი: ", "overlay: page state (", "webview_loads="):
             self.assertIn(marker, self.source)
 
 
@@ -776,7 +776,7 @@ class ScrollTests(unittest.TestCase):
 
 
 class ScrollingSourceTests(unittest.TestCase):
-    """The panel must fix and log its scroll view when it opens."""
+    """The settings page must fix and log its scroll view when it appears."""
 
     @classmethod
     def setUpClass(cls):
@@ -788,17 +788,15 @@ class ScrollingSourceTests(unittest.TestCase):
         self.assertIn("self._settings_content = toga.Box(", self.source)
         self.assertIn("def _ensure_scroll(self)", self.source)
         self.assertIn("overlay.ensure_vertical_scroll(", self.source)
-        # called when the panel opens and again once the panel is really tall
-        self.assertEqual(self.source.count("self._ensure_scroll()"), 2)
+        # once when the ⚙ page is shown
+        self.assertEqual(self.source.count("self._ensure_scroll()"), 1)
 
     def test_the_scroll_numbers_are_logged(self):
         self.assertIn("overlay.scroll_report(", self.source)
         self.assertIn("def _log_scroll(self)", self.source)
 
-    def test_the_body_is_still_a_scroll_container(self):
-        self.assertIn("horizontal=False", self.source)
-        # the WebView stays untouched by the scroll fixes
-        self.assertIn("WEBVIEW_PIN_ENABLED = False", self.source)
+    def test_the_settings_list_is_the_only_scroll_view(self):
+        self.assertEqual(self.source.count("toga.ScrollContainer("), 1)
 
 
 if __name__ == "__main__":

@@ -276,138 +276,84 @@ screen brightness down or let the bot run on the PC instead.
 1. Open the app and sign in on jokergame.cc inside it (the WebView keeps the
    cookies; the app never stores a password). You do **not** have to open a
    table: the bot walks the lobby itself.
-2. **The screen is the game.** The JokerGame WebView fills the window; the
-   controls live in a collapsible bottom sheet that is only a 44 pt bar while it
-   is closed, so the board is never covered and never scaled:
+2. **Two pages: 🎮 Game and ⚙ Settings.** The JokerGame WebView owns the whole
+   game page; a bottom tab bar switches between the two pages and nothing else:
 
    ```
-   ┌────────────────────────────────────────┐
-   │                                        │
-   │        JokerGame (full screen)         │
-   │                                        │
-   ├────────────────────────────────────────┤
-   │  ⚙   ● მუშაობს              ▶    📜   │  ← the bar (44 pt)
-   └────────────────────────────────────────┘
+   ┌────────────────────────────────────────┐   ┌──────────────────────────────┐
+   │                                        │   │ ● მუშაობს ▶ ↻ ⟲ 📜 ⓘ        │
+   │        JokerGame (full screen)         │   ├──────────────────────────────┤
+   │                                        │   │ 🎚 ძრავა                     │
+   │                                        │   │   სიძლიერე ▁▂▃▄▅ 12          │
+   ├────────────────────────────────────────┤   │ 🎮 თამაში                    │
+   │  ● მუშაობს                      ▶     │   │ 🧠 ქცევა  …  ↕ scroll        │
+   ├────────────────────────────────────────┤   ├──────────────────────────────┤
+   │      🎮 თამაში      ⚙ პარამეტრები     │   │   🎮 თამაში  ⚙ პარამეტრები  │
+   └────────────────────────────────────────┘   └──────────────────────────────┘
    ```
 
-   **Floating panel (`ios-31`).**  The panel is pinned *natively* to the content
-   view (`overlay.pin_panel`): only the panel's own constraints are swapped, the
-   **WebView keeps its Toga constraints** (the ios-28 mistake of pinning the
-   WebView itself is gone for good - `WEBVIEW_PIN_ENABLED = False`).
+   **Page switching (`ios-34`).** `_show_page()` only flips `display` on the two
+   page boxes; the `toga.WebView` instance is never re-created, never reloaded and
+   never navigated, so the loaded match, cookies and zoom survive and the bot keeps
+   playing while the settings page is visible.  There is no floating overlay and no
+   native constraint manipulation left in the app (`pin_panel` is gone) - the layout
+   is plain Toga: `pages` (flex) + `tabbar` (52 pt) inside one column.
 
-   **Settings scrolling (`ios-33`).**  The body is a Toga `ScrollContainer`
-   (`horizontal=False`), and Toga fills `UIScrollView.contentSize` in
+   Every switch logs the proof (``webview_loads`` only ever grows when a page really
+   loads):
+
+   ```
+   გვერდი: ⚙ პარამეტრები (WebView #1, იგივე)
+   overlay: page state (page switched)
+   overlay: page=settings game=none settings=pack webview_loads=1
+   overlay: webview 390x752 @ 0,59 | window 390x844
+   overlay: webview: parent=TogaContainerView z=0/1 hidden=True alpha=1.00 frame=390x752@0,59
+   scroll: frame=390x504 contentSize=390x812 offset=0,0 doc=390x812 enabled=True bounce=True delays=False inset=2
+   ```
+
+   **Settings page.** Every setting lives on its own scrollable page (a Toga
+   `ScrollContainer`, `horizontal=False`) grouped into 🎚 ძრავა, 🎮 თამაში,
+   🧠 ქცევა and 🔍 დიაგნოსტიკა.  Toga fills `UIScrollView.contentSize` in
    `ScrollContainer.content_refreshed()` from the *layout* height of the content
-   box.  If that value ends up smaller than the real content, the panel looks
-   perfect and simply will not scroll - the lower settings become unreachable.
-   When the panel opens (twice: immediately and 0.7 s later), the app now calls
-   `overlay.ensure_vertical_scroll()`, which re-measures the content (Toga layout
-   **and** the native subviews inside the scroll document, whichever is larger) and
+   box; if that value is too small the list silently refuses to scroll, so on every
+   switch to the page `overlay.ensure_vertical_scroll()` re-measures the content
+   (Toga layout **and** the native subviews, whichever is larger) and
 
    - raises `contentSize` (and the document frame) to the measured height,
    - sets `alwaysBounceVertical`, `isScrollEnabled`, `showsVerticalScrollIndicator`,
      `delaysContentTouches = False` (otherwise iOS swallows the first tap on a
      control inside a scroll view) and `contentInsetAdjustmentBehavior = never`
-     (the panel already sits inside the safe area, so no double inset),
+     (the page already sits inside the safe area, so no double inset),
 
-   then logs the raw numbers, e.g.
-
-   ```
-   overlay: scroll ok - viewport 390x260, content 812 pt (contentSize 44->812, delaysContentTouches=False)
-   scroll: frame=390x260 contentSize=390x812 offset=0,0 doc=390x812 enabled=True bounce=True delays=False inset=2
-   ```
-
-   The same line is shown by the **ⓘ** alert, so a non-scrolling list can be
-   diagnosed without opening the panel.  Nothing here touches the WebView.
-
-   **Why ⚙ did nothing in `ios-31` (fixed in `ios-32`):** `_install_overlay` set
-   `sheet.style.height = SHEET_BAR_H` (44 pt) *before* pinning and never restored
-   it when the pin failed or was rolled back.  Toga lays a box's children out from
-   the **style** tree, so the sheet stayed a 44 pt box: the game looked fine, the
-   bar was visible, and the settings body was laid out *outside* the panel - a tap
-   on ⚙ changed the display flags and nothing appeared.  Now:
-
-   - the sheet's style height is always its real height (`44 / 304 / 424`), so Toga
-     lays the bar, body and log out **inside** the panel;
-   - the stage gets an explicit `height` (measured once) instead of `flex=1`, so a
-     taller sheet style can never take space from the game - the WebView keeps
-     exactly the frame it has, and its constraints are still untouched;
-   - every pin failure calls `_restore_layout_sheet()` (stage back to `flex=1`,
-     sheet height back to auto), so ⚙ always opens *something*;
-   - 0.7 s after opening, `_verify_open()` checks that the body really sits inside
-     the visible panel (`overlay.body_visible`); if not, the floating pin is
-     released and the layout sheet is shown - settings are never unreachable;
-   - the tap itself is traced (`⚙ დაჭერილია`, `overlay: tap: body was …`,
-     `overlay: open check: …`), and a new **ⓘ** button in the bar shows the log in
-     a native `UIAlertController`, which needs neither the panel nor the WebView.
+   then logs the raw numbers:
 
    ```
-   ⚙ დაჭერილია (on_toggle_sheet)
-   overlay: tap: body was none -> pack
-   overlay: stage frozen at 800 pt (the game cannot move)
-   overlay: panel floated above the game (height 44 pt)
-   overlay: panel height -> 304 pt
-   overlay: open check: ok - body 260 pt at y=44 in a 304 pt panel
-   overlay: თამაშის ზომა უცვლელია (webview 390x800 @ 0,59 | window 390x844)
+   overlay: scroll ok - viewport 390x504, content 812 pt (contentSize 44->812, delaysContentTouches=False)
+   scroll: frame=390x504 contentSize=390x812 offset=0,0 doc=390x812 enabled=True bounce=True delays=False inset=2
    ```
 
-   **Why `ios-30` showed the panel below the game:** `pin_panel` walked the
-   view tree with `view.superview()` / `view.window()`.  rubicon-objc exposes those
-   as **properties**, so every call raised `'UIView' object is not callable`;
-   `pin_panel` threw, the app caught it and quietly kept the Toga layout sheet.
-   All UIKit attribute access now goes through `overlay.read()` /
-   `overlay.number()` (property *or* method), `pin_panel` never raises (it returns
-   `{"error": ...}`), and three regression guards make the mistake impossible to
-   reintroduce: property-shaped fake views (`PropertyView`), a test that
-   `pin_panel` really pins such a view, and an AST check that no UIKit property is
-   called like a method in `overlay.py` / `app.py`.
+   **Header buttons (settings page):** **● status** (მუშაობს / გაჩერებული /
+   ელოდება / შეცდომა, fed by the bot's own log lines), **▶ / ■** start-stop,
+   **↻** restart the bot thread with the current settings, **⟲** reload the lobby
+   page (the only action that navigates the WebView), **📜** show/hide the log
+   section at the bottom of the page, **ⓘ** show the last log lines and the live
+   native numbers in a `UIAlertController` (works even if the settings page had a
+   problem).  The game page keeps only **● status** and **▶ / ■**.
 
-   On every open/close the app sets the panel's height constraint, forces
-   `layoutIfNeeded`, asks Toga to re-lay the panel's children out, and verifies the
-   panel's real height three times - rolling back to the plain layout if it is
-   wrong (and re-pinning if Toga ever re-claims the panel):
+   **Why the floating panel is gone.** Builds `ios-28` … `ios-33` tried to float a
+   native panel over the WebView. Each attempt failed on the device in a different
+   way (a half-drawn game from pinning the WebView; a panel that never appeared
+   because rubicon-objc exposes `superview`/`window` as *properties*, not methods; a
+   settings body laid out outside its 44 pt box). The panel code has been removed
+   from the app: two plain Toga pages need no constraint surgery, and the only
+   remaining UIKit helpers are read-only diagnostics plus the safe-area background
+   paint (`overlay.read` / `describe_*` / `scroll_report` / `show_alert`).
 
-   ```
-   overlay: panel floated above the game (height 44 pt)
-   overlay: frames (sheet open)
-   overlay: webview 390x768 @ 0,59 | window 390x844
-   overlay: panel: parent=TogaContainerView z=1/2 hidden=False alpha=1.00 frame=390x304@0,540
-   overlay: game: parent=TogaContainerView z=0/2 hidden=False alpha=1.00 frame=390x768@0,59
-   overlay: panel pinned=True toga_constraints=none
-   overlay: თამაშის ზომა უცვლელია (webview 390x768 @ 0,59 | window 390x844)
-   overlay: panel verified at 304 pt
-   ```
+   Diagnostics are still printed at startup, after the page loads and on every page
+   switch (`overlay: diagnostics`, `overlay: page state`, `scroll: …`), and the
+   **ⓘ** button shows the same numbers in a native alert.
 
-   The white strip at the top is the window's `systemBackgroundColor` (white in
-   light mode) showing through the status-bar/Dynamic-Island area: the app paints
-   the window and the content view in its own dark colour and logs the real inset
-   (`overlay: safe-area top=59 ...`) so the remaining space can be read off the log
-   instead of guessed.
-
-   Diagnostics (fixed in `ios-30` - rubicon-objc exposes `frame`/`bounds` as
-   *properties*, so calling them raised `'NSRect' object is not callable`) are
-   printed at startup, after the page loads and on **every** open/close:
-
-   ```
-   overlay: diagnostics (page loaded)
-   overlay: sheet display=pack body=none log=none
-   overlay: panel pinned=True
-   UIWindow frame=390x844@0,0 bounds=390x844 clip=False hidden=False alpha=1.00 subs=1
-     TogaContainerView frame=390x844@0,0 …
-   ```
-
-   * **⚙** opens the settings sheet (groups: 🎚 ძრავა, 🎮 თამაში, 🧠 ქცევა,
-     🔍 დიაგნოსტიკა) and turns into **▾** to close it again;
-   * **●** is the live status: **მუშაობს / გაჩერებული / ელოდება / შეცდომა**
-     (green / grey / yellow / red), fed by the bot's own log lines;
-   * **▶ / ■** starts and stops the bot;
-   * **📜** shows/hides the log viewer (it also opens with the sheet closed).
-
-   Opening or closing the sheet only hides and shows widgets of the sheet; the
-   WebView is never re-created, reloaded or zoomed — in layout mode it is
-   re-laid-out (which is what shrinks it) and the page simply reflows. Only
-   **⟲ ლობი** reloads the page.
-3. The sheet holds every setting the bot has — **სიძლიერე (სიღრმე)**,
+3. The settings page holds every setting the bot has — **სიძლიერე (სიღრმე)**,
    **წამი/სვლა**, **რბილი ლიმიტი**, **poll**, **მაქს. თამაში / მაქს. სვლა**,
    **რემატჩის / ჩატის ლოდინი**, **ფსონი**, and the switches
    **⏱ ადამიანური ფიქრი · 😞 მარცხი · 💰 ფსონის გაზრდა · 🔁 ავტო-რემატჩი ·

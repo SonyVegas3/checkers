@@ -251,8 +251,8 @@ class _FakeBot:
 
 
 @unittest.skipIf(ios_app is None, "toga is not installed in this environment")
-class IosSheetSettingsTests(unittest.TestCase):
-    """The sheet's settings really reach a *running* bot (no restart/reload)."""
+class IosSettingsPageTests(unittest.TestCase):
+    """The settings page's settings really reach a *running* bot (no restart)."""
 
     def test_live_settings_are_written_into_the_bot(self):
         bot = _FakeBot()
@@ -311,8 +311,8 @@ class IosSheetSettingsTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get("CHECKERSBOT_UI_TESTS") == "1",
                          "set CHECKERSBOT_UI_TESTS=1 to build the real Toga UI")
-    def test_the_game_widget_survives_the_sheet(self):
-        """Opening/closing the sheet must never re-create or resize the WebView."""
+    def test_switching_pages_keeps_the_same_webview(self):
+        """🎮 -> ⚙ -> 🎮 must never re-create, reload or resize the WebView."""
         try:
             app = ios_app.CheckersBotApp()
             app._build_ui()
@@ -321,12 +321,17 @@ class IosSheetSettingsTests(unittest.TestCase):
         webview = app.webview
         self.assertEqual(app.stage.children[0], webview)      # full-height stage
         self.assertEqual(app.stage.style.flex, 1)
-        app.on_toggle_sheet()
-        self.assertEqual(app.body.style.display, "pack")
-        app.on_toggle_sheet()
-        self.assertEqual(app.body.style.display, "none")
+        self.assertEqual(app.game_page.style.display, "pack")
+        self.assertEqual(app.settings_page.style.display, "none")
+        app.on_show_settings()
+        self.assertEqual(app.game_page.style.display, "none")
+        self.assertEqual(app.settings_page.style.display, "pack")
+        app.on_show_game()
+        self.assertEqual(app.game_page.style.display, "pack")
+        self.assertEqual(app.settings_page.style.display, "none")
         self.assertIs(app.webview, webview)                   # same object, no reload
         self.assertEqual(app.stage.children[0], webview)
+        self.assertEqual(app._page, "game")
         app.on_toggle_log()
         self.assertEqual(app.log_view.style.display, "pack")
         app.on_toggle_log()
