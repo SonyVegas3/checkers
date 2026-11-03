@@ -321,14 +321,11 @@ class IosSettingsPageTests(unittest.TestCase):
         webview = app.webview
         self.assertEqual(app.stage.children[0], webview)      # full-height stage
         self.assertEqual(app.stage.style.flex, 1)
-        self.assertEqual(app.game_page.style.display, "pack")
-        self.assertEqual(app.settings_page.style.display, "none")
+        self.assertEqual(list(app.pages.children), [app.game_page])
         app.on_show_settings()
-        self.assertEqual(app.game_page.style.display, "none")
-        self.assertEqual(app.settings_page.style.display, "pack")
+        self.assertEqual(list(app.pages.children), [app.settings_page])
         app.on_show_game()
-        self.assertEqual(app.game_page.style.display, "pack")
-        self.assertEqual(app.settings_page.style.display, "none")
+        self.assertEqual(list(app.pages.children), [app.game_page])
         self.assertIs(app.webview, webview)                   # same object, no reload
         self.assertEqual(app.stage.children[0], webview)
         self.assertEqual(app._page, "game")

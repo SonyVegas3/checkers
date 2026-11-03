@@ -493,6 +493,128 @@ def ensure_vertical_scroll(scroll_impl: Any, content_impl: Any = None,
         return False, f"{type(error).__name__}: {error}"
 
 
+def hide_title_bar(window_impl: Any) -> str:
+    """Remove Toga's native navigation bar - the big white "CheckersBot" header.
+
+    ``toga_iOS.window.MainWindow`` builds a ``NavigationContainer``, i.e. a real
+    ``UINavigationController`` whose ``navigationBar`` draws the window title above
+    the content, and ``MainWindow.content_native_layout()`` sets
+    ``container.top_inset = navigationBar.frame.origin.y + height`` so every widget
+    is laid out **below** that bar.  On a light-mode device that bar is a large
+    white strip with the app name on it.
+
+    This hides the bar (a supported UIKit window/controller configuration - no
+    constraints are touched) and keeps ``top_inset`` at the real safe-area top, so
+    the freed height goes to the content while the status bar / Dynamic Island
+    space is still respected.  Toga recomputes the inset on every native layout
+    from the (now hidden) bar, so the container's ``on_native_layout`` callback is
+    wrapped to restore our value afterwards.  Returns a short report.
+    """
+    container = read(window_impl, "container")
+    if container is None:
+        return "no container (not an iOS main window?)"
+    controller = read(container, "controller")
+    hidden = False
+    if controller is not None:
+        for name, args in (("setNavigationBarHidden_animated_", (True, False)),
+                           ("setNavigationBarHidden_", (True,))):
+            method = getattr(controller, name, None)
+            if not callable(method):
+                continue
+            try:
+                method(*args)
+                hidden = True
+                break
+            except Exception:
+                continue
+    # the strip the bar used to occupy is the status bar / Dynamic Island area
+    safe_top = 0.0
+    for source in (read(controller, "view"), read(container, "native")):
+        if source is not None:
+            safe_top = max(safe_top, number(read(source, "safeAreaInsets"), "top"))
+    thickness = number(read(read(read(controller, "navigationBar"), "frame"), "size"),
+                       "height")
+
+    def apply_inset(inner: Any) -> None:
+        try:
+            inner.top_inset = float(safe_top)
+        except Exception:
+            pass
+
+    original = read(container, "on_native_layout")
+    state = {"busy": False}
+
+    def keep_inset(inner: Any) -> None:
+        """Run Toga's own handler, then put our safe-area inset back."""
+        if callable(original):
+            try:
+                original(inner)
+            except Exception:
+                pass
+        before = number(inner, "top_inset", -1.0)
+        apply_inset(inner)
+        if abs(before - safe_top) > 0.5 and not state["busy"]:
+            state["busy"] = True                  # a relayout with the new inset
+            try:
+                refresh = getattr(read(read(window_impl, "interface"), "content"),
+                                  "refresh", None)
+                if callable(refresh):
+                    refresh()
+            except Exception:
+                pass
+            finally:
+                state["busy"] = False
+
+    try:
+        container.on_native_layout = keep_inset
+    except Exception:
+        pass
+    apply_inset(container)
+    try:                                          # use the freed height right away
+        refresh = getattr(read(read(window_impl, "interface"), "content"), "refresh",
+                          None)
+        if callable(refresh):
+            refresh()
+    except Exception:
+        pass
+    return (f"navigation bar hidden={hidden} (was {thickness:.0f} pt tall), "
+            f"top inset {safe_top:.0f} pt")
+
+
+def describe_toga(widget: Any, label: str = "toga", depth: int = 2) -> List[str]:
+    """Dump the **Toga** tree (not UIKit): what is mounted, and where it landed.
+
+    This is what proves the page exclusivity: ``pages`` must have exactly **one**
+    child, and the game page must own (nearly) the whole window height.
+    """
+    lines: List[str] = [f"{label}: mounted tree"]
+
+    def walk(node: Any, level: int) -> None:
+        if node is None or level > depth:
+            return
+        style = read(node, "style")
+        frame = read(read(read(node, "_impl"), "native"), "frame")
+        lines.append(
+            "  " * level
+            + "%s display=%s flex=%s height=%s frame=%.0fx%.0f@%.0f,%.0f"
+            % (
+                type(node).__name__,
+                read(style, "display", "?"),
+                read(style, "flex", "?"),
+                read(style, "height", "?"),
+                number(read(frame, "size"), "width"),
+                number(read(frame, "size"), "height"),
+                number(read(frame, "origin"), "x"),
+                number(read(frame, "origin"), "y"),
+            )
+        )
+        for child in list(read(node, "children", []) or []):
+            walk(child, level + 1)
+
+    walk(widget, 0)
+    return lines
+
+
 def diagnostics(view: Any, max_depth: int = 6, max_children: int = 6) -> List[str]:
     """Dump the native view hierarchy - the only way to see what UIKit really did.
 
@@ -731,6 +853,8 @@ __all__ = [
     "scroll_report",
     "scroll_extent",
     "ensure_vertical_scroll",
+    "hide_title_bar",
+    "describe_toga",
     "layout_now",
     "paint_background",
     "top_ancestor",

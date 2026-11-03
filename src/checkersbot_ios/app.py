@@ -247,9 +247,10 @@ class CheckersBotApp(toga.App):
             style=Pack(direction=COLUMN, flex=1, background_color="#0b0f14"),
             children=[self.stage, self.game_bar],
         )
+        # only the game page is mounted; ``_show_page()`` swaps them
         self.pages = toga.Box(
             style=Pack(direction=COLUMN, flex=1),
-            children=[self.game_page, self.settings_page],
+            children=[self.game_page],
         )
         root = toga.Box(
             style=Pack(direction=COLUMN, flex=1, background_color="#0b0f14"),
@@ -258,11 +259,32 @@ class CheckersBotApp(toga.App):
         self._style_tabs()
         self.log_line("აპი გაშვებულია — 🎮 თამაში / ⚙ პარამეტრები (ქვედა ტაბები)")
         try:                       # the native views exist only after the window
+            self.loop.call_later(0.8, self._hide_header)
             self.loop.call_later(1.2, self._paint_background)
             self.loop.call_later(2.5, self._log_diagnostics, "startup")
         except Exception:
             pass
         return root
+
+    def _hide_header(self) -> None:
+        """Remove the white "CheckersBot" navigation bar Toga puts above the app.
+
+        ``toga_iOS`` builds the main window from a ``NavigationContainer`` - a real
+        ``UINavigationController`` whose bar draws the window title and whose height
+        is added to the container's ``top_inset``, pushing every widget down.  See
+        :func:`overlay.hide_title_bar`.
+        """
+        if sys.platform != "ios":
+            return
+        try:
+            window = getattr(self, "main_window", None) or getattr(self, "_window", None)
+            impl = getattr(window, "_impl", None)
+            if impl is None:
+                self.log_line("! overlay: no main window to un-decorate")
+                return
+            self.log_line("overlay: header " + overlay.hide_title_bar(impl))
+        except Exception as error:               # never break the app for this
+            self.log_line(f"! overlay: header fix failed: {error}")
 
     # -- page 1: the game ------------------------------------------------
     def _build_game(self) -> None:
@@ -337,9 +359,8 @@ class CheckersBotApp(toga.App):
                        font_size=11),
         )
         self.settings_page = toga.Box(
-            style=Pack(direction=COLUMN, flex=1, display="none",
-                       background_color="#0b0f14"),
-            children=[self.settings_header, self._scroll_container, self.log_view],
+            style=Pack(direction=COLUMN, flex=1, background_color="#0b0f14"),
+            children=[self.settings_header, self._scroll_container],
         )
 
     # -- navigation -------------------------------------------------------
@@ -352,11 +373,24 @@ class CheckersBotApp(toga.App):
         self._show_page("settings")
 
     def _show_page(self, name: str) -> None:
-        """Switch pages by flipping ``display`` - never by rebuilding widgets."""
+        """Show exactly one page: the other one is *removed* from the container.
+
+        Toga 0.5.6 does **not** remove a ``display="none"`` widget from the layout
+        (``PackLogic._hidden`` only looks at ``visibility``), so hiding a page with
+        ``display`` left it taking half the window - the WebView shrank and the
+        settings stayed visible underneath.  Mounting only the active page is the
+        behaviour the layout engine actually honours, and ``Widget.remove()`` only
+        detaches native views (``set_window`` is a no-op on iOS), so the WKWebView
+        keeps its loaded match and simply gets re-attached on the way back.
+        """
+        page = self.settings_page if name == "settings" else self.game_page
         game = name == "game"
         try:
-            self.game_page.style.display = "pack" if game else "none"
-            self.settings_page.style.display = "none" if game else "pack"
+            for child in list(self.pages.children):
+                if child is not page:
+                    self.pages.remove(child)
+            if page not in self.pages.children:
+                self.pages.add(page)
         except Exception:
             self.log_line("! გვერდის გადართვა ვერ მოხდა:\n" + traceback.format_exc())
             return
@@ -409,13 +443,12 @@ class CheckersBotApp(toga.App):
             top = overlay.read(native, "window") or overlay.top_ancestor(native)
             lines = [f"overlay: diagnostics ({why})",
                      f"overlay: page={self._page} "
-                     f"game={self.game_page.style.display} "
-                     f"settings={self.settings_page.style.display} "
+                     f"mounted={len(self.pages.children)} "
                      f"log={self.log_view.style.display}",
                      overlay.describe_pin(self.webview._impl),
                      _safe_area(top)]
             lines += overlay.diagnostics(top, max_depth=5)
-            for line in lines:
+            for line in list(lines) + overlay.describe_toga(self.pages):
                 self.log_line(line)
         except Exception as error:               # diagnostics must never break it
             self.log_line(f"! overlay: diagnostics failed: {error}")
@@ -431,12 +464,13 @@ class CheckersBotApp(toga.App):
         try:
             self.log_line(f"overlay: page state ({why})")
             self.log_line(f"overlay: page={self._page} "
-                          f"game={self.game_page.style.display} "
-                          f"settings={self.settings_page.style.display} "
+                          f"mounted={len(self.pages.children)} "
                           f"webview_loads={self._page_loads}")
             self.log_line("overlay: " + self._frame_report())
             self.log_line(overlay.describe_overlay(
                 getattr(self.webview._impl, "native", None), "overlay: webview"))
+            for line in overlay.describe_toga(self.pages, "overlay: pages"):
+                self.log_line(line)
             self._log_scroll()
         except Exception as error:               # logging must never break the UI
             self.log_line(f"! overlay: page report failed: {error}")
@@ -532,8 +566,7 @@ class CheckersBotApp(toga.App):
         try:
             lines = ((self.log_view.value or "").splitlines()
                      + list(getattr(self, "_pending_log", []) or []))[-18:]
-            head = [f"page: {self._page} (game={self.game_page.style.display}, "
-                    f"settings={self.settings_page.style.display})",
+            head = [f"page: {self._page} (mounted: {len(self.pages.children)})",
                     f"webview page loads: {self._page_loads}",
                     overlay.describe_pin(self.webview._impl),
                     overlay.describe_overlay(
@@ -550,16 +583,25 @@ class CheckersBotApp(toga.App):
             self.log_line("! ⓘ ვერ გაიხსნა:\n" + traceback.format_exc())
 
     def on_toggle_log(self, widget=None, **kwargs) -> None:
-        """Show/hide the log section at the bottom of the settings page.
+        """Mount/unmount the log section at the bottom of the settings page.
 
-        It is a normal layout child: it takes space from the scrollable settings
-        area instead of covering anything - no overlay, nothing to get wrong.
+        Toga 0.5.6 keeps a ``display="none"`` widget in the layout, so the log is
+        added and removed instead: closed it takes **no** height at all.
         """
-        opening = self.log_view.style.display == "none"
-        self.log_view.style.display = "pack" if opening else "none"
-        if opening:
+        mounted = self.log_view in self.settings_page.children
+        try:
+            if mounted:
+                self.settings_page.remove(self.log_view)
+            else:
+                self.settings_page.add(self.log_view)
+                self.log_view.style.display = "pack"
+        except Exception:
+            self.log_line("! ლოგის ჩვენება ვერ მოხდა:\n" + traceback.format_exc())
+            return
+        if not mounted:
             self._flush_log()
-        self._log_scroll()
+        self._ensure_scroll()
+        self.log_line("📜 ლოგი " + ("დაიმატა" if not mounted else "მოშორდა"))
 
     def _show_hint(self, text: str) -> None:
         hint = getattr(self, "hint", None)

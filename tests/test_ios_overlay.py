@@ -632,12 +632,16 @@ class TwoPageSourceTests(unittest.TestCase):
                      "self.tab_game", "self.tab_settings"):
             self.assertIn(name, self.source)
 
-    def test_page_switch_only_flips_display(self):
+    def test_exactly_one_page_is_mounted(self):
+        # Toga 0.5.6 ignores ``display="none"`` in the layout, so the inactive page
+        # must be *removed* from the container, not just hidden.
         self.assertIn("def _show_page(self, name: str)", self.source)
-        self.assertIn('self.game_page.style.display = "pack" if game else "none"',
-                      self.source)
-        self.assertIn('self.settings_page.style.display = "none" if game else "pack"',
-                      self.source)
+        self.assertIn("for child in list(self.pages.children):", self.source)
+        self.assertIn("self.pages.remove(child)", self.source)
+        self.assertIn("self.pages.add(page)", self.source)
+        # ... and the pages are no longer juggled with display flags
+        self.assertNotIn('self.game_page.style.display = "pack" if game', self.source)
+        self.assertIn("children=[self.game_page],", self.source)   # only one mounted
         # the handlers the tab buttons call
         self.assertIn('on_press=self.on_show_game', self.source)
         self.assertIn('on_press=self.on_show_settings', self.source)
@@ -788,8 +792,8 @@ class ScrollingSourceTests(unittest.TestCase):
         self.assertIn("self._settings_content = toga.Box(", self.source)
         self.assertIn("def _ensure_scroll(self)", self.source)
         self.assertIn("overlay.ensure_vertical_scroll(", self.source)
-        # once when the ⚙ page is shown
-        self.assertEqual(self.source.count("self._ensure_scroll()"), 1)
+        # once when the ⚙ page is shown, once when the log is added
+        self.assertEqual(self.source.count("self._ensure_scroll()"), 2)
 
     def test_the_scroll_numbers_are_logged(self):
         self.assertIn("overlay.scroll_report(", self.source)
@@ -797,6 +801,93 @@ class ScrollingSourceTests(unittest.TestCase):
 
     def test_the_settings_list_is_the_only_scroll_view(self):
         self.assertEqual(self.source.count("toga.ScrollContainer("), 1)
+
+
+class TitleBarTests(unittest.TestCase):
+    """Toga's main window is a UINavigationController - its bar is the white header."""
+
+    class FakeNavigationBar:
+        def __init__(self, height):
+            self.frame = types.SimpleNamespace(
+                size=types.SimpleNamespace(width=390, height=height),
+                origin=types.SimpleNamespace(x=0, y=59))
+
+    class FakeController:
+        def __init__(self, bar_height=44.0):
+            self.navigationBar = TitleBarTests.FakeNavigationBar(bar_height)
+            self.view = types.SimpleNamespace(
+                safeAreaInsets=types.SimpleNamespace(top=59.0, bottom=34.0,
+                                                     left=0.0, right=0.0))
+            self.hidden = None
+
+        def setNavigationBarHidden_animated_(self, hidden, animated=True):
+            self.hidden = (bool(hidden), bool(animated))
+
+    class FakeContainer:
+        def __init__(self, controller):
+            self.controller = controller
+            self.native = types.SimpleNamespace(
+                safeAreaInsets=types.SimpleNamespace(top=0.0))
+            self.top_inset = 0
+            self.on_native_layout = None
+
+    class FakeContent:
+        def __init__(self):
+            self.refreshes = 0
+
+        def refresh(self):
+            self.refreshes += 1
+
+    def _window(self, bar_height=44.0):
+        controller = self.FakeController(bar_height)
+        container = self.FakeContainer(controller)
+        content = self.FakeContent()
+        window = types.SimpleNamespace(
+            container=container,
+            interface=types.SimpleNamespace(content=content),
+        )
+        return window, controller, container, content
+
+    def test_the_navigation_bar_is_hidden(self):
+        window, controller, _, _ = self._window()
+        report = overlay.hide_title_bar(window)
+        self.assertEqual(controller.hidden, (True, False))
+        self.assertIn("hidden=True", report)
+        self.assertIn("44", report)              # it says how tall the bar was
+
+    def test_the_content_gets_the_freed_height_but_keeps_the_island(self):
+        window, _, container, content = self._window()
+        overlay.hide_title_bar(window)
+        # the *safe area* top (59 pt), not zero: the Dynamic Island stays clear
+        self.assertEqual(container.top_inset, 59.0)
+        self.assertGreaterEqual(content.refreshes, 1)
+
+    def test_toga_recomputing_the_inset_from_the_bar_is_corrected(self):
+        window, controller, container, content = self._window()
+        overlay.hide_title_bar(window)
+        # Toga's own handler would set the inset from the (hidden) bar again
+        container.top_inset = 0
+        container.on_native_layout(container)
+        self.assertEqual(container.top_inset, 59.0)
+
+    def test_a_missing_container_is_reported_not_raised(self):
+        self.assertIn("no container", overlay.hide_title_bar(types.SimpleNamespace()))
+
+    def test_describe_toga_lists_the_mounted_children(self):
+        page = types.SimpleNamespace(
+            style=types.SimpleNamespace(display="pack", flex=1, height=None),
+            _impl=types.SimpleNamespace(native=PropertyView("p", size=(402, 800))),
+            children=[],
+        )
+        root = types.SimpleNamespace(
+            style=types.SimpleNamespace(display="pack", flex=1, height=None),
+            _impl=types.SimpleNamespace(native=PropertyView("r", size=(402, 874))),
+            children=[page],
+        )
+        lines = overlay.describe_toga(root, "pages")
+        self.assertIn("mounted tree", lines[0])
+        self.assertEqual(len(lines), 3)          # root + one page
+        self.assertIn("frame=402x800", lines[2])
 
 
 if __name__ == "__main__":

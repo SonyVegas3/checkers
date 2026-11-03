@@ -292,23 +292,39 @@ screen brightness down or let the bot run on the PC instead.
    └────────────────────────────────────────┘   └──────────────────────────────┘
    ```
 
-   **Page switching (`ios-34`).** `_show_page()` only flips `display` on the two
-   page boxes; the `toga.WebView` instance is never re-created, never reloaded and
-   never navigated, so the loaded match, cookies and zoom survive and the bot keeps
-   playing while the settings page is visible.  There is no floating overlay and no
-   native constraint manipulation left in the app (`pin_panel` is gone) - the layout
-   is plain Toga: `pages` (flex) + `tabbar` (52 pt) inside one column.
+   **Page switching (`ios-35`).**  Only **one** page is ever mounted: `_show_page()`
+   removes the inactive page from the `pages` box and adds the wanted one.  This is
+   deliberate - Toga 0.5.6 does **not** drop a `display="none"` widget from the
+   layout (`PackLogic._hidden` only looks at `visibility`), so the earlier
+   display-based switch left both pages sharing the height: the settings stayed
+   visible under the game and the WebView was squeezed into the top half (measured
+   402x305 in a 402x874 window).  `Widget.remove()` only detaches native views
+   (`set_window()` is a no-op on iOS), so the WKWebView keeps its loaded match,
+   cookies and zoom and is simply re-attached on the way back.
 
-   Every switch logs the proof (``webview_loads`` only ever grows when a page really
-   loads):
+   The white **"CheckersBot" header** was Toga's own window chrome:
+   `toga_iOS.window.MainWindow` builds a `NavigationContainer`, i.e. a real
+   `UINavigationController` whose navigation bar draws the window title, and
+   `MainWindow.content_native_layout()` adds that bar's height to
+   `container.top_inset` so every widget is laid out below it.  `ios-35` hides the
+   bar (`setNavigationBarHidden:animated:`) and keeps `top_inset` at the real
+   **safe-area top** (59 pt on an iPhone 17 Pro), so the freed height goes to the
+   game while the status bar / Dynamic Island space stays clear:
+
+   ```
+   overlay: header navigation bar hidden=True (was 44 pt tall), top inset 59 pt
+   ```
+
+   Every switch logs the mounted tree, the WebView frame and the load counter
+   (`webview_loads` must stay 1):
 
    ```
    გვერდი: ⚙ პარამეტრები (WebView #1, იგივე)
-   overlay: page state (page switched)
-   overlay: page=settings game=none settings=pack webview_loads=1
-   overlay: webview 390x752 @ 0,59 | window 390x844
-   overlay: webview: parent=TogaContainerView z=0/1 hidden=True alpha=1.00 frame=390x752@0,59
-   scroll: frame=390x504 contentSize=390x812 offset=0,0 doc=390x812 enabled=True bounce=True delays=False inset=2
+   overlay: page=settings mounted=1 webview_loads=1
+   overlay: webview 390x815 @ 0,59 | window 390x874
+   overlay: pages: mounted tree
+     Box display=pack flex=1 height=None frame=390x822@0,0
+       Box display=pack flex=1 height=None frame=390x822@0,0
    ```
 
    **Settings page.** Every setting lives on its own scrollable page (a Toga
